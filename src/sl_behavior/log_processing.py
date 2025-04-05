@@ -15,6 +15,7 @@ from numpy.lib.npyio import NpzFile
 from ataraxis_video_system import extract_logged_video_system_data
 from ataraxis_base_utilities import ensure_directory_exists
 from ataraxis_communication_interface import extract_logged_hardware_module_data
+from .data_classes import HardwareConfiguration
 
 
 def _interpolate_data(
@@ -804,7 +805,7 @@ def _process_experiment_data(log_path: Path, output_directory: Path, cue_map: di
     cue_dataframe.write_ipc(output_directory.joinpath("cue_data.feather"), compression="lz4")
 
 
-def process_log_directory(data_directory: Path, verbose: bool = False) -> None:
+def process_log_directories(data_directory: Path, verbose: bool = False) -> None:
     """Reads the compressed .npz log files stored in the input directory and extracts all camera frame timestamps and
     relevant behavior data stored in log files.
 
@@ -832,7 +833,7 @@ def process_log_directory(data_directory: Path, verbose: bool = False) -> None:
     compressed_files: list[Path] = [file for file in log_directory.glob("*.npz")]
 
     # Loads the input HardwareConfiguration file to read the hardware parameters necessary to parse the data
-    hardware_configuration: RuntimeHardwareConfiguration = RuntimeHardwareConfiguration.from_yaml(  # type: ignore
+    hardware_configuration: HardwareConfiguration = HardwareConfiguration.from_yaml(  # type: ignore
         file_path=hardware_configuration_path,
     )
 
@@ -893,8 +894,8 @@ def process_log_directory(data_directory: Path, verbose: bool = False) -> None:
                             parse_break_data,
                             file,
                             behavior_data_directory,
-                            hardware_configuration.minimum_break_strength,
-                            hardware_configuration.maximum_break_strength,
+                            np.float64(hardware_configuration.minimum_break_strength),
+                            np.float64(hardware_configuration.maximum_break_strength),
                         )
                     )
 
@@ -908,8 +909,8 @@ def process_log_directory(data_directory: Path, verbose: bool = False) -> None:
                             parse_valve_data,
                             file,
                             behavior_data_directory,
-                            hardware_configuration.valve_scale_coefficient,
-                            hardware_configuration.valve_nonlinearity_exponent,
+                            np.float64(hardware_configuration.valve_scale_coefficient),
+                            np.float64(hardware_configuration.valve_nonlinearity_exponent),
                         )
                     )
 
@@ -933,7 +934,7 @@ def process_log_directory(data_directory: Path, verbose: bool = False) -> None:
                             parse_lick_data,
                             file,
                             behavior_data_directory,
-                            hardware_configuration.lick_threshold,
+                            np.uint16(hardware_configuration.lick_threshold),
                         )
                     )
 
@@ -944,7 +945,7 @@ def process_log_directory(data_directory: Path, verbose: bool = False) -> None:
                             parse_torque_data,
                             file,
                             behavior_data_directory,
-                            hardware_configuration.torque_per_adc_unit,
+                            np.float64(hardware_configuration.torque_per_adc_unit),
                         )
                     )
 
@@ -961,7 +962,7 @@ def process_log_directory(data_directory: Path, verbose: bool = False) -> None:
                             parse_encoder_data,
                             file,
                             behavior_data_directory,
-                            hardware_configuration.cm_per_pulse,
+                            np.float64(hardware_configuration.cm_per_pulse),
                         )
                     )
 

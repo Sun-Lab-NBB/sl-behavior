@@ -7,24 +7,20 @@ build-backend = "hatchling.build"
 
 # Project metdata section. Provides the genral ID information about the project.
 [project]
-name = "sl-experiment"
+name = "sl-behavior"
 version = "1.0.0"
-description = "A Python library that provides tools to acquire, manage, and preprocess scientific data in the Sun (NeuroAI) lab."
+description = "A Python library that provides tools for processing behavior data acquired in the Sun (NeuroAI) lab."
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.11, <3.12"  # Limited to 3.11 until AXVS (genicam) supports 3.12+
+requires-python = ">=3.11, <3.12"  # Until AXVS supports 3.12+
 authors = [
     { name = "Ivan Kondratyev", email = "ik278@cornell.edu" },
-    { name = "Kushaan Gupta", email = "kg574@cornell.edu"},
-    { name = "Natalie Yeung", email = "nyy4@cornell.edu" },
-    { name = "Katlynn Ryu", email = "kmr238@cornell.edu" },
-    { name = "Jasmine Si"}
 ]
 maintainers = [
     { name = "Ivan Kondratyev", email = "ik278@cornell.edu" },
 ]
 
-keywords = ["ataraxis", "MQTT", "Serial", "communication", "interface", "unity", "microcontroller"]
+keywords = ["Sun", "behavior", "processing"]
 
 classifiers = [
     # Development status
@@ -43,35 +39,25 @@ classifiers = [
 
 # Runtime project dependencies. This overlaps with the 'condarun' optional list.
 dependencies = [
-    "zaber-motion>=7,<8",
-    "crc>=7,<8",
-    "tabulate>=0,<1",
     "click>=8,<9",
     "numpy>=2,<3",
     "numba>=0,<1",
     "scipy>=1,<2",
-    "matplotlib>=3,<4",
-    "ataraxis-time>=3,<4",
     "ataraxis-base-utilities>=3,<4",
-    "ataraxis-data-structures>=3.1.1,<4",
     "ataraxis-transport-layer-pc>=1,<2",
+    "ataraxis-data-structures>=3.1.1,<4",
     "ataraxis-communication-interface>=3.1.0,<4",
     "ataraxis-video-system>=1.1.0,<2",
-    "tifffile>=2025,<2026",
-    "imagecodecs>=2024,<2025",
     "tqdm>=4,<5",
     "xxhash>=3,<4",
-    "google-api-python-client>=2,<3",
     "polars>=1,<2",
-    "pyqt5>=5,<6",
     "pyarrow>=19,<20",
-    "pynput>=1,<2",
     "appdirs>=1,<2",
 ]
 
 [project.urls]
-Homepage = "https://github.com/Sun-Lab-NBB/sl-experiment"
-Documentation = "https://sl-experiment-api-docs.netlify.app/"
+Homepage = "https://github.com/Sun-Lab-NBB/sl-behavior"
+Documentation = "https://sl-behavior-api-docs.netlify.app/"
 
 # Specifies additional dependencies that can be installed alongside the main library. Also, this is the section that
 # stores conda, condarun, and noconda lists that facilitate setting up dependencies via conda where possible.
@@ -84,8 +70,6 @@ condarun = [
     "numpy>=2,<3",
     "numba>=0,<1",
     "scipy>=1,<2",
-    "tifffile>=2025,<2026",
-    "imagecodecs>=2024,<2025",
     "tqdm>=4,<5",
     "matplotlib>=3,<4",
     "zaber-motion>=7,<8",
@@ -100,15 +84,6 @@ condarun = [
 
 # Dependencies known to be installable with conda for all development platforms (OSX ARM64, WIN AMD64, LIN AMD64).
 conda = [
-    # Testing
-    "pytest>=8,<9",
-    "pytest-cov>=6,<7",
-    "pytest-xdist>=3,<4",
-
-    # Coverage Reports
-    "coverage[toml]>=7,<8",
-    "junitparser>=3,<4",
-
     # Documentation
     "sphinx>=8,<9",
     "importlib_metadata>=8,<9",
@@ -130,8 +105,6 @@ conda = [
     # Types:
     "types-appdirs>=1,<2",
     "types-tqdm>=4,<5",
-    "types-tabulate>=0,<1",
-    "scipy-stubs>=1,<2",
 
 ]
 
@@ -142,10 +115,6 @@ noconda = [
     "tox>=4,<5",
     "tox-uv>=1,<2",
     "uv>=0,<1",
-
-    # Types:
-    "types-pynput>=1,<2",
-    "google-api-python-client-stubs>=1,<2",
 
     # Documentation
     "sphinx-rtd-dark-mode>=1,<2",
@@ -161,21 +130,12 @@ noconda = [
 # be used by developers to quickly install all necessary components for working on this project. Has to be installed
 # from pip.
 dev = [
-    "sl-experiment[conda]",
-    "sl-experiment[noconda]"
+    "sl-behavior[conda]",
+    "sl-behavior[noconda]"
 ]
 
 # Future support for CLI interface(s) can be realizied through this section.
 [project.scripts]
-sl-crc = "sl_experiment.cli:calculate_crc"
-sl-devices = "sl_experiment.cli:list_devices"
-sl-maintain-vr = "sl_experiment.cli:maintain_vr"
-sl-lick-train = "sl_experiment.cli:lick_training"
-sl-run-train = "sl_experiment.cli:run_training"
-sl-experiment = "sl_experiment.cli:run_experiment"
-sl-process = "sl_experiment.cli:preprocess_session"
-sl-purge = "sl_experiment.cli:purge_data"
-sl-replace-root = "sl_experiment.cli:replace_root_path"
 
 # Specifies files that should not be included in the source-code distribution but are also not part of gitignore.
 [tool.hatch.build.targets.sdist]
@@ -183,7 +143,7 @@ exclude = [".github", "recipe"]
 
 # Specifies the library structure.
 [tool.hatch.build.targets.wheel]
-packages = ["src/sl_experiment", "examples"]
+packages = ["src/sl_behavior", "examples"]
 
 # Ruff Configuration.
 [tool.ruff]
@@ -243,7 +203,7 @@ length-sort = true                 # Places shorter imports first
 disallow_untyped_defs = true # Enforces function annotation
 warn_unused_ignores = true   # Warns against using 'type: ignore' for packages that have type stubs available.
 exclude = [
-    "sl-experiment-\\d+", # Ignores temporary folder created by setuptools when building the sdist
+    "sl-behavior-\\d+",   # Ignores temporary folder created by setuptools when building the sdist
     "venv.*/",            # Ignores virtual environments
     "build/",             # Ignores the sdist directory
     "dist/",              # Ignores the wheel directory
