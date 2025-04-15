@@ -1,5 +1,10 @@
 from pathlib import Path
-
+import re 
+import os 
+import filecmp
+import sys
+from sl_experiment import packaging_tools
+from ataraxis_base_utilities import console
 
 def find_raw_data_directories(project_directory: Path) -> tuple[Path, ...]:
     """Recursively finds all raw_data directories inside the input root directory.
@@ -31,7 +36,7 @@ def find_raw_data_directories(project_directory: Path) -> tuple[Path, ...]:
                 # If checksum is found in this subdirectory, marks this branch as "processed"
                 if search_directory(child):
                     found_in_subdirs = True
-
+            
         return found_in_subdirs
 
     # Starts the recursive search
@@ -65,7 +70,68 @@ def find_videos(project_directory: Path, base_name: str = "face_camera") -> tupl
     return tuple(video_paths)
 
 
-for vid_p in find_videos(Path("/home/cybermouse/Desktop/Projects/TestMice")):
-    print(vid_p)
+def rename(project_directory: Path, output_directory: Path, base_name: str = "face_camera") -> None:
+    """
+    Searches for all {base_name}.mp4 files within the session directory, renames them to the 
+    format {project_animal_session}.mp4, and moves them to the specified output directory.
+
+    Args:
+        project_directory: The absolute path to the root project directory on the BioHPC server.
+        output_directory: The absolute path to the directory where the renamed {base_name}.mp4 files
+                          will be moved.
+    """
+    timestamp_pattern = re.compile(r"\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{6}")
+    all_videos = find_videos(project_directory=project_directory, base_name=base_name)
+
+    for video_path in all_videos:
+        path_str = str(video_path)
+
+        match = timestamp_pattern.search(path_str)
+        timestamp_str = match[0] 
+
+        path_parts = Path(path_str).parts
+        timestamp_index = path_parts.index(timestamp_str)
+
+        project = path_parts[timestamp_index - 2]
+        animal = path_parts[timestamp_index - 1]
+
+        new_name = f"{project}_{animal}_{timestamp_str}_{base_name}.mp4"
+        new_path = output_directory / new_name
+
+        video_path.rename(new_path)
 
 
+def verify_checksum(project_directory: Path):
+    """
+    Verifies that the stored checksum file for each session matches the calculated checksum.
+    
+    Args:
+        project_directory: The absolute path to the root project directory on the BioHPC server.
+
+    Returns:
+        True if all stored checksum files for each session match the calculated checksums.
+        The function returns false immediately when 
+    """
+    raw_data_dirs = find_raw_data_directories(project_directory)
+    
+    for raw_data_dir in raw_data_dirs:
+        checksum_file = raw_data_dir / "ax_checksum.txt"
+        
+        calculated_checksum = packaging_tools.calculate_directory_checksum(
+            directory=raw_data_dir,
+            batch=False,
+            save_checksum=False
+        )
+
+        with open(checksum_file, 'r') as f:
+            stored_checksum = f.read().strip()
+        
+        if stored_checksum != calculated_checksum:
+            message = (
+                "Calculated checksum and ax_checksum.txt do not match.\n"
+                f"Stored checksum: {stored_checksum}\n"
+                f"Calculated checksum: {calculated_checksum}"
+            )
+            console.error(message=message, error=ValueError)
+
+    return
