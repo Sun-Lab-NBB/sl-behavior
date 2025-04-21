@@ -1,10 +1,11 @@
 from pathlib import Path
-import re 
-import os 
+import re
+import os
 import filecmp
 import sys
 from sl_experiment import packaging_tools
 from ataraxis_base_utilities import console
+from sl_shared_assets import SessionData
 
 def find_raw_data_directories(project_directory: Path) -> tuple[Path, ...]:
     """Recursively finds all raw_data directories inside the input root directory.
@@ -72,7 +73,7 @@ def find_videos(project_directory: Path, base_name: str = "face_camera") -> tupl
 
 def rename(project_directory: Path, output_directory: Path, base_name: str = "face_camera") -> None:
     """
-    Searches for all {base_name}.mp4 files within the session directory, renames them to the 
+    Searches for all {base_name}.mp4 files within the session directory, renames them to the
     format {project_animal_session}.mp4, and moves them to the specified output directory.
 
     Args:
@@ -87,7 +88,7 @@ def rename(project_directory: Path, output_directory: Path, base_name: str = "fa
         path_str = str(video_path)
 
         match = timestamp_pattern.search(path_str)
-        timestamp_str = match[0] 
+        timestamp_str = match[0]
 
         path_parts = Path(path_str).parts
         timestamp_index = path_parts.index(timestamp_str)
@@ -110,7 +111,7 @@ def verify_checksum(project_directory: Path):
 
     Returns:
         True if all stored checksum files for each session match the calculated checksums.
-        The function returns false immediately when 
+        The function returns false immediately when
     """
     raw_data_dirs = find_raw_data_directories(project_directory)
     
@@ -135,3 +136,40 @@ def verify_checksum(project_directory: Path):
             console.error(message=message, error=ValueError)
 
     return
+
+
+def sort_text_files(root_folder: Path, working_directory: Path):
+    """
+    Searches for and loads all 'session_data.yaml' files and organizes each session by project name.
+
+    This function generates a .txt file for each unique project name, which contains the paths
+    to all associated sessions.
+
+    Args:
+        root_folder: The absolute path to the root project directory on the BioHPC server.
+        working_directory: The path to the directory where project-specific .txt files containing
+                           all session paths for the same project are written to.                 
+    """
+    raw_data_paths = [folder for folder in root_folder.rglob("session_data.yaml")]
+
+    projects_dict = {}
+
+    for session_file in raw_data_paths:
+        timestamp_path = session_file.parent.parent 
+        
+        session_data = SessionData.load(
+            session_path=timestamp_path, 
+            on_server=False,
+        )
+        project_name = session_data.project_name
+        
+        if project_name not in projects_dict:
+            projects_dict[project_name] = []
+        
+        projects_dict[project_name].append(str(timestamp_path))
+
+    for project_name, session_paths in projects_dict.items():
+        output_file = working_directory / f"{project_name}.txt"
+        with open(output_file, "w") as f:
+            f.write("\n".join(session_paths) + "\n")
+            
