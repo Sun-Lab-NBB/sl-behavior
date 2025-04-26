@@ -1,11 +1,9 @@
-from pathlib import Path
 import re
-import os
-import filecmp
-import sys
-from sl_experiment import packaging_tools
+from pathlib import Path
+
+from sl_shared_assets import SessionData, packaging_tools
 from ataraxis_base_utilities import console
-from sl_shared_assets import SessionData
+
 
 def find_raw_data_directories(project_directory: Path) -> tuple[Path, ...]:
     """Recursively finds all raw_data directories inside the input root directory.
@@ -37,7 +35,7 @@ def find_raw_data_directories(project_directory: Path) -> tuple[Path, ...]:
                 # If checksum is found in this subdirectory, marks this branch as "processed"
                 if search_directory(child):
                     found_in_subdirs = True
-            
+
         return found_in_subdirs
 
     # Starts the recursive search
@@ -105,7 +103,7 @@ def rename(project_directory: Path, output_directory: Path, base_name: str = "fa
 def verify_checksum(project_directory: Path):
     """
     Verifies that the stored checksum file for each session matches the calculated checksum.
-    
+
     Args:
         project_directory: The absolute path to the root project directory on the BioHPC server.
 
@@ -114,19 +112,17 @@ def verify_checksum(project_directory: Path):
         The function returns false immediately when
     """
     raw_data_dirs = find_raw_data_directories(project_directory)
-    
+
     for raw_data_dir in raw_data_dirs:
         checksum_file = raw_data_dir / "ax_checksum.txt"
-        
+
         calculated_checksum = packaging_tools.calculate_directory_checksum(
-            directory=raw_data_dir,
-            batch=False,
-            save_checksum=False
+            directory=raw_data_dir, batch=False, save_checksum=False
         )
 
-        with open(checksum_file, 'r') as f:
+        with open(checksum_file, "r") as f:
             stored_checksum = f.read().strip()
-        
+
         if stored_checksum != calculated_checksum:
             message = (
                 "Calculated checksum and ax_checksum.txt do not match.\n"
@@ -148,28 +144,27 @@ def sort_text_files(root_folder: Path, working_directory: Path):
     Args:
         root_folder: The absolute path to the root project directory on the BioHPC server.
         working_directory: The path to the directory where project-specific .txt files containing
-                           all session paths for the same project are written to.                 
+                           all session paths for the same project are written to.
     """
     raw_data_paths = [folder for folder in root_folder.rglob("session_data.yaml")]
 
     projects_dict = {}
 
     for session_file in raw_data_paths:
-        timestamp_path = session_file.parent.parent 
-        
+        timestamp_path = session_file.parent.parent
+
         session_data = SessionData.load(
-            session_path=timestamp_path, 
+            session_path=timestamp_path,
             on_server=False,
         )
         project_name = session_data.project_name
-        
+
         if project_name not in projects_dict:
             projects_dict[project_name] = []
-        
+
         projects_dict[project_name].append(str(timestamp_path))
 
     for project_name, session_paths in projects_dict.items():
         output_file = working_directory / f"{project_name}.txt"
         with open(output_file, "w") as f:
             f.write("\n".join(session_paths) + "\n")
-            

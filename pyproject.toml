@@ -49,6 +49,7 @@ dependencies = [
     "ataraxis-communication-interface>=3.1.0,<4",
     "ataraxis-video-system>=1.1.0,<2",
     "sl-experiment>=1,<2",
+    "sl-shared-assets<=1.0.0rc14",
     "tqdm>=4,<5",
     "xxhash>=3,<4",
     "polars>=1,<2",

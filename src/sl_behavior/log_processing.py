@@ -12,10 +12,12 @@ import numpy as np
 import polars as pl
 from numpy.typing import NDArray
 from numpy.lib.npyio import NpzFile
-from ataraxis_video_system import extract_logged_video_system_data
-from ataraxis_base_utilities import ensure_directory_exists
-from ataraxis_communication_interface import extract_logged_hardware_module_data
+
 from .data_classes import HardwareConfiguration
+from sl_shared_assets import SessionData
+from ataraxis_video_system import extract_logged_video_system_data
+from ataraxis_communication_interface import extract_logged_hardware_module_data
+# from sl_behavior.data_classes import HardwareConfiguration
 
 
 def _interpolate_data(
@@ -84,7 +86,9 @@ def parse_encoder_data(log_path: Path, output_directory: Path, cm_per_pulse: np.
     """
 
     # Extracts data from the log file
-    log_data = extract_logged_hardware_module_data(log_path=log_path, module_type=2, module_id=1)
+    log_data_tuple = extract_logged_hardware_module_data(log_path=log_path, module_type_id=((2, 1),))
+    extracted_module_data = log_data_tuple[0]
+    log_data = extracted_module_data.data
 
     # Here, we only look for event-codes 51 (CCW displacement) and event-codes 52 (CW displacement).
 
@@ -155,7 +159,9 @@ def parse_ttl_data(log_path: Path, output_directory: Path) -> None:
     """
 
     # Extracts data from the log file
-    log_data = extract_logged_hardware_module_data(log_path=log_path, module_type=1, module_id=1)
+    log_data_tuple = extract_logged_hardware_module_data(log_path=log_path, module_type_id=((1, 1),))
+    extracted_module_data = log_data_tuple[0]
+    log_data = extracted_module_data.data
 
     # Here, we only look for event-codes 52 (InputON) and event-codes 53 (InputOFF).
 
@@ -232,7 +238,9 @@ def parse_break_data(
     """
 
     # Extracts data from the log file
-    log_data = extract_logged_hardware_module_data(log_path=log_path, module_type=3, module_id=1)
+    log_data_tuple = extract_logged_hardware_module_data(log_path=log_path, module_type_id=((3, 1),))
+    extracted_module_data = log_data_tuple[0]
+    log_data = extracted_module_data.data
 
     # Here, we only look for event-codes 52 (Engaged) and event-codes 53 (Disengaged) as no experiment requires
     # variable breaking power. If we ever use variable breaking power, this section would need to be expanded to
@@ -298,7 +306,9 @@ def parse_valve_data(
             translates valve pulses into dispensed water volumes.
     """
     # Extracts data from the log file
-    log_data = extract_logged_hardware_module_data(log_path=log_path, module_type=5, module_id=1)
+    log_data_tuple = extract_logged_hardware_module_data(log_path=log_path, module_type_id=((5, 1),))
+    extracted_module_data = log_data_tuple[0]
+    log_data = extracted_module_data.data
 
     # Here, we primarily look for event-codes 52 (Valve Open) and event-codes 53 (Valve Closed).
     # We also look for codes 55 (ToneON) and 56 (ToneOFF) however and these codes are parsed similar to the
@@ -450,7 +460,9 @@ def parse_lick_data(log_path: Path, output_directory: Path, lick_threshold: np.u
     """
 
     # Extracts data from the log file
-    log_data = extract_logged_hardware_module_data(log_path=log_path, module_type=4, module_id=1)
+    log_data_tuple = extract_logged_hardware_module_data(log_path=log_path, module_type_id=((4, 1),))
+    extracted_module_data = log_data_tuple[0]
+    log_data = extracted_module_data.data
 
     # LickModule only sends messages with code 51 (Voltage level changed). Therefore, this extraction pipeline has
     # to apply the threshold filter, similar to how the real-time processing method.
@@ -525,9 +537,11 @@ def parse_torque_data(log_path: Path, output_directory: Path, torque_per_adc_uni
         torque. Therefore, currently, it is best to treat the torque data extracted from this module as a very rough
         estimate of how active the animal is at a given point in time.
     """
+    log_data_tuple = extract_logged_hardware_module_data(log_path=log_path, module_type_id=((6, 1),))
 
     # Extracts data from the log file
-    log_data = extract_logged_hardware_module_data(log_path=log_path, module_type=6, module_id=1)
+    extracted_module_data = log_data_tuple[0]
+    log_data = extracted_module_data.data
 
     # Here, we only look for event-codes 51 (CCW Torque) and event-codes 52 (CW Torque). CCW torque is interpreted
     # as torque in the positive direction, and CW torque is interpreted as torque in the negative direction.
@@ -608,8 +622,10 @@ def parse_screen_data(log_path: Path, output_directory: Path, initially_on: bool
     """
 
     # Extracts data from the log file
-    log_data = extract_logged_hardware_module_data(log_path=log_path, module_type=7, module_id=1)
+    log_data_tuple = extract_logged_hardware_module_data(log_path=log_path, module_type_id=((7, 1),))
+    extracted_module_data = log_data_tuple[0]
 
+    log_data = extracted_module_data.data
     # Here, we only look for event-codes 52 (pulse ON) and event-codes 53 (pulse OFF).
 
     # The way the module is implemented guarantees there is at least one code 53 message. However, if screen state
@@ -821,13 +837,17 @@ def process_log_directories(data_directory: Path, verbose: bool = False) -> None
         verbose: Determines whether this function should run in the verbose mode.
     """
     # Resolves the paths to the specific directories used during processing
-    log_directory = data_directory.joinpath("behavior_data_log")  # Should exist inside the raw data directory
-    camera_frame_directory = data_directory.joinpath("camera_frames")  # Should exist inside the raw data directory
-    behavior_data_directory = data_directory.joinpath("behavior_data")
-    ensure_directory_exists(behavior_data_directory)  # Generates the directory
+    session_directory = data_directory.parent
+
+    session_data = SessionData.load(session_path=session_directory, on_server=False)
+
+    log_directory = session_data.raw_data.behavior_data_path
+    camera_frame_directory = session_data.raw_data.camera_data_path
+    behavior_data_directory = session_data.processed_data.behavior_data_path
 
     # Should exist inside the raw data directory
-    hardware_configuration_path = data_directory.joinpath("hardware_configuration.yaml")
+    # hardware_configuration_path = data_directory.joinpath("hardware_configuration.yaml")
+    hardware_configuration_path = session_data.raw_data.hardware_configuration_path
 
     # Finds all .npz log files inside the input log file directory. Assumes there are no uncompressed log files.
     compressed_files: list[Path] = [file for file in log_directory.glob("*.npz")]
