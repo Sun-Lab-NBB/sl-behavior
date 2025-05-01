@@ -71,14 +71,12 @@ def movement_speed(
 
         # For each path, remove teleports and calculate rolling speed
         for path in df["path"].unique():
-            path_df = df.copy()
-            in_current_path = df["path"] == path
-            # Mark distances as NaN if not on this path
-            path_df.loc[~in_current_path, "dist"] = np.nan
+            path_df = df.loc[df["path"] == path].copy()
+            # Mark distances as NaN if not on this path (no longer needed since path_df is filtered)
             # Filter out high teleport distances
             path_df.loc[path_df["dist"] > ignore_threshold, "dist"] = 0
             # Fill missing distances at the start of the path
-            path_df.loc[in_current_path, "dist"] = path_df.loc[in_current_path, "dist"].fillna(0)
+            path_df["dist"] = path_df["dist"].fillna(0)
             # Convert time deltas to seconds, then compute instantaneous speed
             path_df["speed"] = path_df["dist"] / path_df["time"].dt.total_seconds().diff()
             path_df["speed"] = path_df["speed"].fillna(0)
