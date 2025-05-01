@@ -1,3 +1,4 @@
+from typing import Tuple, Dict, List, Any, Optional
 import json
 
 import numpy as np
@@ -7,7 +8,16 @@ from .data import GimblData, FieldTypes
 from .transform import assign_frame_info, ffill_missing_frame_info
 
 
-def parse_gimbl_log(file_loc, verbose=False):
+def parse_gimbl_log(file_loc: str, verbose: bool = False) -> Tuple[pd.DataFrame, GimblData]:
+    """Parse a GIMBL log file into a DataFrame and GimblData object.
+
+    Args:
+        file_loc (str): The file path to the GIMBL log JSON file.
+        verbose (bool, optional): Whether to print debug information.
+
+    Returns:
+        Tuple[pd.DataFrame, GimblData]: The parsed DataFrame and GimblData object.
+    """
     data = GimblData()
     # load file.
     with open(file_loc) as data_file:
@@ -57,9 +67,14 @@ def parse_gimbl_log(file_loc, verbose=False):
     return df, data
 
 
-def set_data_types(df):
-    """
-    Applies the field types defined in FieldTypes().fields, except we no longer convert 'time' to Timedelta here.
+def set_data_types(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply predefined field types to a DataFrame.
+
+    Args:
+        df (pd.DataFrame): The DataFrame to convert.
+
+    Returns:
+        pd.DataFrame: The updated DataFrame with new types.
     """
     fields = FieldTypes().fields
     for key in fields.keys():
@@ -71,11 +86,29 @@ def set_data_types(df):
 
 
 def parse_custom_msg(
-    df, msg, fields, frames=pd.DataFrame(), rename_columns={}, msg_field="msg", data_field="data", remove_nan=False
-):
-    """
-    Main parsing function. Looks for `msg` in df[msg_field] and pulls out requested fields plus time_us.
-    Returns a DataFrame with columns [index, time_us, frame] + fields.
+    df: pd.DataFrame,
+    msg: str,
+    fields: List[str],
+    frames: pd.DataFrame = pd.DataFrame(),
+    rename_columns: Dict[str, str] = None,
+    msg_field: str = "msg",
+    data_field: str = "data",
+    remove_nan: bool = False
+) -> pd.DataFrame:
+    """Parse custom messages from a DataFrame using specified fields.
+
+    Args:
+        df (pd.DataFrame): The main DataFrame.
+        msg (str): The message identifier to parse.
+        fields (List[str]): The list of field names to extract.
+        frames (pd.DataFrame, optional): Frame data for alignment.
+        rename_columns (Dict[str, str], optional): Column rename mappings.
+        msg_field (str, optional): Name of the message column.
+        data_field (str, optional): Name of the data column.
+        remove_nan (bool, optional): Whether to remove NaN values.
+
+    Returns:
+        pd.DataFrame: A DataFrame with the relevant parsed fields.
     """
     data = pd.DataFrame(columns=["index", "time_us", "frame"] + fields).set_index("index")
     if msg_field in df:
@@ -105,8 +138,15 @@ def parse_custom_msg(
     return data
 
 
-def parse_frames(df):
-    """Reads frame timestamps from gimbl log and returns a DataFrame with `time_us` for each frame."""
+def parse_frames(df: pd.DataFrame) -> pd.DataFrame:
+    """Extract microscope frame timestamps.
+
+    Args:
+        df (pd.DataFrame): The main DataFrame.
+
+    Returns:
+        pd.DataFrame: A DataFrame indexed by frame containing time_us.
+    """
     frames = parse_custom_msg(df, "microscope frame", [], msg_field="data.msg")
     # parse_custom_msg adds a 'frame' col, which we don’t actually need here
     frames = frames.drop(columns="frame")
@@ -114,8 +154,15 @@ def parse_frames(df):
     return frames
 
 
-def parse_position(df):
-    """Parses position information (actor name, position, heading) and returns a DataFrame with time_us, x, y, z, heading."""
+def parse_position(df: pd.DataFrame) -> pd.DataFrame:
+    """Parse actor position and heading information.
+
+    Args:
+        df (pd.DataFrame): The DataFrame containing position entries.
+
+    Returns:
+        pd.DataFrame: A DataFrame with time_us, x, y, z, heading columns.
+    """
     position = parse_custom_msg(df, "Position", ["name", "position", "heading"])
     position = position.reset_index().set_index(["index", "name"]).drop(columns="frame")
     # Convert position to cm
@@ -128,8 +175,16 @@ def parse_position(df):
     return position
 
 
-def get_position_per_frame(position, frames):
-    """Aggregates position data per frame, per actor. Uses time_us as an integer."""
+def get_position_per_frame(position: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate position data per frame and actor.
+
+    Args:
+        position (pd.DataFrame): Actor position data.
+        frames (pd.DataFrame): Frame timestamps.
+
+    Returns:
+        pd.DataFrame: The DataFrame with time_us, heading, x, y, z, position columns.
+    """
     if frames.empty or position.empty:
         return pd.DataFrame(columns=["time_us", "heading", "x", "y", "z", "position"])
     frame_position = assign_frame_info(position, frames)
@@ -155,9 +210,14 @@ def get_position_per_frame(position, frames):
     return frame_position[["time_us", "heading", "x", "y", "z", "position"]]
 
 
-def parse_path(df):
-    """
-    Parses path position info (actor name, pathName, position) and returns a DataFrame with time_us, path, position.
+def parse_path(df: pd.DataFrame) -> pd.DataFrame:
+    """Parse path position data.
+
+    Args:
+        df (pd.DataFrame): The DataFrame containing path data.
+
+    Returns:
+        pd.DataFrame: The DataFrame with time_us, path, and position columns.
     """
     path = parse_custom_msg(df, "Path Position", ["name", "pathName", "position"], rename_columns={"pathName": "path"})
     path = path.reset_index().set_index(["index", "name"]).drop(columns="frame")
@@ -165,9 +225,15 @@ def parse_path(df):
     return path
 
 
-def get_path_position_per_frame(df, frames):
-    """
-    Gets path position per frame from the main DataFrame. Fills missing by bfill or ffill as needed.
+def get_path_position_per_frame(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
+    """Derive path positions for each frame.
+
+    Args:
+        df (pd.DataFrame): The main DataFrame with path info.
+        frames (pd.DataFrame): Frame timestamps.
+
+    Returns:
+        pd.DataFrame: A DataFrame with time_us, path, position columns.
     """
     path = parse_custom_msg(
         df,
@@ -190,9 +256,15 @@ def get_path_position_per_frame(df, frames):
     return path[["time_us", "path", "position"]]
 
 
-def parse_camera(df, frames):
-    """
-    Parses camera frame info and aligns it to microscope frames (time_us).
+def parse_camera(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
+    """Parse camera frame info and align it with microscope frames.
+
+    Args:
+        df (pd.DataFrame): The main DataFrame.
+        frames (pd.DataFrame): Frame timestamps.
+
+    Returns:
+        pd.DataFrame: The DataFrame indexed by camera frame and ID.
     """
     camera = parse_custom_msg(df, "Camera Frame", ["id"], frames=frames, msg_field="data.msg.event", data_field="data.msg")
     camera = camera.rename_axis("cam_frame")
@@ -201,10 +273,15 @@ def parse_camera(df, frames):
     return camera.reset_index().set_index(["cam_frame", "id"])
 
 
-def parse_reward(df, frames):
-    """
-    Parses reward info from gimbl log. Returns DataFrame with columns:
-    time_us, frame, type, amount, valve_time, sound_on, sound_freq, sound_duration
+def parse_reward(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
+    """Parse reward info from the log.
+
+    Args:
+        df (pd.DataFrame): The main DataFrame.
+        frames (pd.DataFrame): Frame timestamps.
+
+    Returns:
+        pd.DataFrame: The DataFrame containing reward data.
     """
     msg = "Reward Delivery"
     fields = ["type", "amount", "valveTime", "withSound", "frequency", "duration"]
@@ -220,9 +297,15 @@ def parse_reward(df, frames):
     return reward
 
 
-def parse_idle_sound(df, frames):
-    """
-    Parses idle sound info from gimbl log. Returns time_us, frame, type, duration, sound.
+def parse_idle_sound(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
+    """Parse idle sound info from the log.
+
+    Args:
+        df (pd.DataFrame): The main DataFrame.
+        frames (pd.DataFrame): Frame timestamps.
+
+    Returns:
+        pd.DataFrame: The DataFrame with idle sound data.
     """
     idle = parse_custom_msg(df, "Idle Sound", ["type", "duration", "sound"], frames=frames,
                             msg_field="data.msg.action", data_field="data.msg")
@@ -232,9 +315,14 @@ def parse_idle_sound(df, frames):
     return idle
 
 
-def parse_session_info(df):
-    """
-    Reads session info from lines labeled 'Info'. Returns a dict with date_time, project, scene.
+def parse_session_info(df: pd.DataFrame) -> Dict[str, Optional[str]]:
+    """Read session info from lines labeled 'Info'.
+
+    Args:
+        df (pd.DataFrame): The main DataFrame.
+
+    Returns:
+        Dict[str, Optional[str]]: Dictionary containing date_time, project, and scene.
     """
     info = parse_custom_msg(df, "Info", ["time", "project", "scene"], rename_columns={"time": "date_time"}).drop(columns="frame", errors="ignore")
     if not info.empty:
@@ -249,9 +337,15 @@ def parse_session_info(df):
     return info
 
 
-def parse_spherical_settings(df, frames):
-    """
-    Parses spherical controller settings, returning a DataFrame with time_us + various controller fields.
+def parse_spherical_settings(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
+    """Parse spherical controller settings.
+
+    Args:
+        df (pd.DataFrame): The main DataFrame.
+        frames (pd.DataFrame): Frame timestamps.
+
+    Returns:
+        pd.DataFrame: A DataFrame containing spherical settings.
     """
     msg = "Spherical Controller Settings"
     fields = [
@@ -278,9 +372,14 @@ def parse_spherical_settings(df, frames):
     return settings.set_index(["index", "name"])
 
 
-def parse_spherical_data(df):
-    """
-    Parses raw data for spherical controllers, returning time_us, roll (cm), yaw (deg), pitch (cm).
+def parse_spherical_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Parse spherical controller data.
+
+    Args:
+        df (pd.DataFrame): The main DataFrame.
+
+    Returns:
+        pd.DataFrame: The DataFrame with roll, yaw, pitch columns.
     """
     data = parse_custom_msg(df, "Spherical Controller", ["name", "roll", "yaw", "pitch"])
     data = data.reset_index().set_index(["index", "name"]).drop(columns="frame", errors="ignore")
@@ -290,9 +389,15 @@ def parse_spherical_data(df):
     return data
 
 
-def parse_linear_settings(df, frames):
-    """
-    Parses linear controller settings, returning time_us + config fields.
+def parse_linear_settings(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
+    """Parse linear controller settings.
+
+    Args:
+        df (pd.DataFrame): The main DataFrame.
+        frames (pd.DataFrame): Frame timestamps.
+
+    Returns:
+        pd.DataFrame: A DataFrame containing linear settings.
     """
     msg = "Linear Controller Settings"
     fields = ["name", "isActive", "loopPath", "gain.forward", "gain.backward", "inputSmooth"]
@@ -308,9 +413,14 @@ def parse_linear_settings(df, frames):
     return settings.set_index(["index", "name"])
 
 
-def parse_linear_data(df):
-    """
-    Parses raw data from linear controllers, returning time_us + move in cm.
+def parse_linear_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Parse linear controller data.
+
+    Args:
+        df (pd.DataFrame): The main DataFrame.
+
+    Returns:
+        pd.DataFrame: The DataFrame with movement information.
     """
     data = parse_custom_msg(df, "Linear Controller", ["name", "move"])
     data = data.reset_index().set_index(["index", "name"]).drop(columns="frame", errors="ignore")
@@ -318,9 +428,15 @@ def parse_linear_data(df):
     return data
 
 
-def get_linear_data_per_frame(df, frames):
-    """
-    Sums linear movement data for each microscope frame. Returns columns time_us, move.
+def get_linear_data_per_frame(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
+    """Sum linear movement data within each frame.
+
+    Args:
+        df (pd.DataFrame): The DataFrame with linear controller data.
+        frames (pd.DataFrame): Frame timestamps.
+
+    Returns:
+        pd.DataFrame: The DataFrame with time_us, move columns.
     """
     data = parse_custom_msg(df, "Linear Controller", ["name", "move"], frames=frames, remove_nan=True)
     data = data.reset_index().set_index(["index", "name"])
@@ -336,9 +452,15 @@ def get_linear_data_per_frame(df, frames):
     return grouped[["time_us", "move"]]
 
 
-def get_spherical_data_per_frame(df, frames):
-    """
-    Sums spherical movement data within each frame. Returns columns time_us, roll, yaw, pitch.
+def get_spherical_data_per_frame(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
+    """Sum spherical movement data within each frame.
+
+    Args:
+        df (pd.DataFrame): The DataFrame with spherical controller data.
+        frames (pd.DataFrame): Frame timestamps.
+
+    Returns:
+        pd.DataFrame: The DataFrame with time_us, roll, yaw, pitch columns.
     """
     data = parse_custom_msg(df, "Spherical Controller", ["name", "roll", "yaw", "pitch"], frames=frames, remove_nan=True)
     data = data.reset_index().set_index(["index", "name"])
