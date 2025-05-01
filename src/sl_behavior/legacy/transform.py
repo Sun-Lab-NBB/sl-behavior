@@ -228,12 +228,22 @@ def add_ranged_timestamp_values(
     start_times = timestamp_df["time_start"].values
     end_times = timestamp_df["time_end"].values
 
-    # For each row in 'timestamp_df', assign the relevant fields 
-    # to all rows in 'df' falling within [time_start, time_end]
-    for i in range(start_times.size):
-        in_range = (time >= start_times[i]) & (time <= end_times[i])
-        df.loc[in_range, fields] = timestamp_df.loc[i, fields].values
+    # Sort timestamp_df by time_start for merge_asof
+    timestamp_df = timestamp_df.sort_values("time_start")
 
-    # Reorder columns to keep the newly added fields at the end
-    fields_in_order = [col for col in fields if col in missing_columns]
+    # Use merge_asof to find the closest preceding time_start for each row in df
+    df = pd.merge_asof(
+        df.sort_values("time_us"),
+        timestamp_df[["time_start", "time_end"] + fields].sort_values("time_start"),
+        left_on="time_us",
+        right_on="time_start",
+        direction="backward"
+    )
+
+    # Filter rows where time_us falls outside the [time_start, time_end] range
+    df = df[(df["time_us"] >= df["time_start"]) & (df["time_us"] <= df["time_end"])]
+
+    # Drop helper columns and reorder fields
+    df = df.drop(columns=["time_start", "time_end"])
+    fields_in_order = [col for col in fields if col in df.columns]
     return df[original_columns + fields_in_order]
