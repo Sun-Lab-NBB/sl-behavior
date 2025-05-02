@@ -100,38 +100,38 @@ def rename(project_directory: Path, output_directory: Path, base_name: str = "fa
         video_path.rename(new_path)
 
 
-def verify_checksum(project_directory: Path):
+def verify_checksum(session_data: SessionData) -> bool:
     """
-    Verifies that the stored checksum file for each session matches the calculated checksum.
+    Verifies that the stored checksum file for the session matches the calculated checksum.
 
     Args:
-        project_directory: The absolute path to the root project directory on the BioHPC server.
+        session_directory: The absolute path to the session directory.
+        session_data: The SessionData instance that has already been loaded.
 
     Returns:
-        True if all stored checksum files for each session match the calculated checksums.
-        The function returns false immediately when
+        True if the stored checksum file matches the calculated checksum.
+        False if a mismatch is found.
     """
-    raw_data_dirs = find_raw_data_directories(project_directory)
+    raw_data_dir = session_data.raw_data.raw_data_path
+    checksum_file = raw_data_dir / "ax_checksum.txt"
 
-    for raw_data_dir in raw_data_dirs:
-        checksum_file = raw_data_dir / "ax_checksum.txt"
+    calculated_checksum = packaging_tools.calculate_directory_checksum(
+        directory=raw_data_dir, batch=False, save_checksum=False
+    )
 
-        calculated_checksum = packaging_tools.calculate_directory_checksum(
-            directory=raw_data_dir, batch=False, save_checksum=False
+    with open(checksum_file, "r") as f:
+        stored_checksum = f.read().strip()
+
+    if stored_checksum != calculated_checksum:
+        message = (
+            "Calculated checksum and ax_checksum.txt do not match.\n"
+            f"Stored checksum: {stored_checksum}\n"
+            f"Calculated checksum: {calculated_checksum}"
         )
+        console.error(message=message, error=ValueError)
+        return False
 
-        with open(checksum_file, "r") as f:
-            stored_checksum = f.read().strip()
-
-        if stored_checksum != calculated_checksum:
-            message = (
-                "Calculated checksum and ax_checksum.txt do not match.\n"
-                f"Stored checksum: {stored_checksum}\n"
-                f"Calculated checksum: {calculated_checksum}"
-            )
-            console.error(message=message, error=ValueError)
-
-    return
+    return True
 
 
 def sort_text_files(root_folder: Path, working_directory: Path):
