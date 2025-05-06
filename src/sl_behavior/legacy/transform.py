@@ -247,3 +247,64 @@ def add_ranged_timestamp_values(
     df = df.drop(columns=["time_start", "time_end"])
     fields_in_order = [col for col in fields if col in df.columns]
     return df[original_columns + fields_in_order]
+
+
+def convert_reward_data(reward_df):
+    """Convert the reward DataFrame to SL format:
+    - Cumulative 'amount'
+    - Rename columns
+    - Insert new rows for sound_off and valve_close
+    - Remove temporary columns
+    - Sort by time_us.
+    """
+    # Accumulate reward amounts
+    reward_df["amount"] = reward_df["amount"].cumsum()
+
+    # Rename columns
+    reward_df = reward_df.rename(
+        columns={
+            "sound_duration": "sound_duration_ms",
+            "amount": "dispensed_water_volume_uL"
+        }
+    )
+
+    # For every sound_on == True, create sound_off and valve_close rows
+    for _, row in reward_df[reward_df["sound_on"]].iterrows():
+        original_ts = row["time_us"]
+
+        # Sound ends
+        sound_off_row = row.copy()
+        sound_off_row["sound_on"] = False
+        sound_off_row["time_us"] = original_ts + int(sound_off_row["sound_duration_ms"] * 1e3)
+
+        # Valve closes
+        valve_close_row = row.copy()
+        valve_close_row["time_us"] = original_ts + int(valve_close_row["valve_time"])
+        if valve_close_row["time_us"] >= sound_off_row["time_us"]:
+            valve_close_row["sound_on"] = False
+
+        # Append new rows
+        reward_df = pd.concat(
+            [reward_df, pd.DataFrame([valve_close_row, sound_off_row])],
+            ignore_index=True
+        )
+
+    # Drop unused columns
+    reward_df = reward_df.drop(columns=["valve_time", "sound_duration_ms"])
+
+    # Sort by time
+    reward_df = reward_df.sort_values(by="time_us")
+
+    return reward_df
+
+def convert_lick_data(lick_df):
+    """Convert lick data to SL format.
+
+    Parameters
+    ----------
+    lick_df : pd.DataFrame
+        DataFrame containing lick data with time_us and lick_duration columns.
+    """
+    lick_df = lick_df.copy()
+    lick_df['lick_state'] = True
+    return lick_df

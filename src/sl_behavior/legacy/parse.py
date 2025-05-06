@@ -5,7 +5,12 @@ import numpy as np
 import pandas as pd
 
 from .data import GimblData, FieldTypes
-from .transform import assign_frame_info, ffill_missing_frame_info
+from .transform import (
+    assign_frame_info,
+    convert_lick_data,
+    convert_reward_data,
+    ffill_missing_frame_info,
+)
 
 
 def parse_gimbl_log(file_loc: str, verbose: bool = False) -> Tuple[pd.DataFrame, GimblData]:
@@ -52,8 +57,10 @@ def parse_gimbl_log(file_loc: str, verbose: bool = False) -> Tuple[pd.DataFrame,
     data.camera = parse_camera(df, frames)
     # reward info.
     data.reward = parse_reward(df, frames)
+    data.reward = convert_reward_data(data.reward)
     # lick info.
     data.lick = parse_custom_msg(df, "Lick", [], frames=frames)
+    data.lick = convert_lick_data(data.lick)
     # idle info
     data.idle.sound = parse_idle_sound(df, frames)
     # controller info
@@ -122,7 +129,7 @@ def parse_custom_msg(
             # Rename any specified columns
             for field in fields:
                 original_col = f"{data_field}.{field}"
-                if field in rename_columns:
+                if rename_columns is not None and field in rename_columns:
                     data = data.rename(columns={original_col: rename_columns[field]})
                 else:
                     data = data.rename(columns={original_col: field})
