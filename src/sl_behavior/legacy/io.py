@@ -49,8 +49,8 @@ def _extract_cue_changes(
 
     Returns:
         DataFrame with columns
-        ``time_us`` – time at which the cue became active  
-        ``vr_cue`` – categorical integer code (stable across calls)  
+        ``time_us`` – time at which the cue became active
+        ``vr_cue`` – categorical integer code (stable across calls)
         ``cue_name`` – human‑readable cue identifier
     """
     # ---------------------------- validation --------------------------------- #

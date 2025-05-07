@@ -231,7 +231,12 @@ def get_position_per_frame(position: pd.DataFrame, frames: pd.DataFrame) -> pd.D
     frame_position["position"] = frame_position[["x", "y", "z"]].to_numpy().tolist()
 
     # Fill missing
-    frame_position = ffill_missing_frame_info(frame_position, frames, nan_fill=False, subset_columns=["heading", "x", "y", "z", "time_us"])
+    frame_position = ffill_missing_frame_info(
+        frame_position,
+        frames,
+        nan_fill=False,
+        subset_columns=["heading", "x", "y", "z", "time_us"],
+    )
     return frame_position[["time_us", "heading", "x", "y", "z", "position"]]
 
 
@@ -316,7 +321,15 @@ def parse_reward(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
         "frequency": "sound_freq",
         "duration": "sound_duration"
     }
-    reward = parse_custom_msg(df, msg, fields, rename_columns=rename, frames=frames, msg_field="data.msg.action", data_field="data.msg")
+    reward = parse_custom_msg(
+        df,
+        msg,
+        fields,
+        rename_columns=rename,
+        frames=frames,
+        msg_field="data.msg.action",
+        data_field="data.msg",
+    )
     if "type" in reward:
         reward["type"] = reward["type"].astype("category")
     return reward
@@ -349,7 +362,9 @@ def parse_session_info(df: pd.DataFrame) -> Dict[str, Optional[str]]:
     Returns:
         Dict[str, Optional[str]]: Dictionary containing date_time, project, and scene.
     """
-    info = parse_custom_msg(df, "Info", ["time", "project", "scene"], rename_columns={"time": "date_time"}).drop(columns="frame", errors="ignore")
+    info = parse_custom_msg(
+        df, "Info", ["time", "project", "scene"], rename_columns={"time": "date_time"}
+    ).drop(columns="frame", errors="ignore")
     if not info.empty:
         info = info.to_numpy().transpose()
         info = {
