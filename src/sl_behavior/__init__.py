@@ -1,6 +1,1 @@
-from . import (
-    data_classes,
-    legacy,
-    log_processing,
-    path_tools,
-)
+from .log_processing import extract_log_data

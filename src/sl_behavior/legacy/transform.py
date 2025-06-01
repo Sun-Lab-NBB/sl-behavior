@@ -11,11 +11,7 @@ import numpy as np
 import pandas as pd
 
 
-def assign_frame_info(
-    data: pd.DataFrame,
-    frames: pd.DataFrame,
-    remove_nan: bool = True
-) -> pd.DataFrame:
+def assign_frame_info(data: pd.DataFrame, frames: pd.DataFrame, remove_nan: bool = True) -> pd.DataFrame:
     """Joins indexed Gimbl log data with frame info to assign frame numbers.
 
     This function merges the provided 'data' DataFrame with 'frames' based on their time indices,
@@ -25,7 +21,7 @@ def assign_frame_info(
         data (pd.DataFrame):
             Gimbl log data to assign frame info to. Must contain a "time_us" column.
         frames (pd.DataFrame):
-            Parsed frame info with "time_us" and "frame" columns. 
+            Parsed frame info with "time_us" and "frame" columns.
             The "time_us" column must be a datetime-like or timedelta type.
         remove_nan (bool, optional):
             Whether to remove entries outside the frame range (timesteps before the first frame or after the last frame).
@@ -70,10 +66,7 @@ def assign_frame_info(
 
 
 def ffill_missing_frame_info(
-    frame_data: pd.DataFrame,
-    frames: pd.DataFrame,
-    nan_fill: bool = False,
-    subset_columns: Optional[list[str]] = None
+    frame_data: pd.DataFrame, frames: pd.DataFrame, nan_fill: bool = False, subset_columns: Optional[list[str]] = None
 ) -> pd.DataFrame:
     """Forward-fill missing frames by copying info from previous frames.
 
@@ -111,11 +104,9 @@ def ffill_missing_frame_info(
         df = df.reset_index().set_index("frame")
 
         # Create a template with all frames and associated times for this actor
-        template = pd.DataFrame({
-            "frame": range(num_frames),
-            "name": name,
-            "time_us": frames["time_us"].to_numpy()
-        }).set_index("frame")
+        template = pd.DataFrame(
+            {"frame": range(num_frames), "name": name, "time_us": frames["time_us"].to_numpy()}
+        ).set_index("frame")
 
         # Merge actor data with the template across all frames
         df = df.combine_first(template).sort_index()
@@ -132,11 +123,7 @@ def ffill_missing_frame_info(
     return frame_data.sort_index()
 
 
-def add_timestamp_values(
-    df: pd.DataFrame,
-    timestamp_df: pd.DataFrame,
-    fields: list[str]
-) -> pd.DataFrame:
+def add_timestamp_values(df: pd.DataFrame, timestamp_df: pd.DataFrame, fields: list[str]) -> pd.DataFrame:
     """Forward-fill values from a timestamped DataFrame to align with 'df' based on matching or preceding time.
 
     Unlike add_ranged_timestamp_values (which uses time ranges), this routine picks
@@ -152,8 +139,8 @@ def add_timestamp_values(
 
     Returns:
         pd.DataFrame:
-            A copy of 'df' with the specified fields added or expanded, assigned from the nearest 
-            earlier (or equal) timestamp in 'timestamp_df'. Rows with no suitable preceding timestamp 
+            A copy of 'df' with the specified fields added or expanded, assigned from the nearest
+            earlier (or equal) timestamp in 'timestamp_df'. Rows with no suitable preceding timestamp
             remain None for those columns.
     """
     df = df.copy()
@@ -182,11 +169,7 @@ def add_timestamp_values(
     return df
 
 
-def add_ranged_timestamp_values(
-    df: pd.DataFrame,
-    timestamp_df: pd.DataFrame,
-    fields: list[str]
-) -> pd.DataFrame:
+def add_ranged_timestamp_values(df: pd.DataFrame, timestamp_df: pd.DataFrame, fields: list[str]) -> pd.DataFrame:
     """Assign values to rows in 'df' based on whether the row's time falls within time ranges in
     'timestamp_df'.
 
@@ -237,7 +220,7 @@ def add_ranged_timestamp_values(
         timestamp_df[["time_start", "time_end"] + fields].sort_values("time_start"),
         left_on="time_us",
         right_on="time_start",
-        direction="backward"
+        direction="backward",
     )
 
     # Filter rows where time_us falls outside the [time_start, time_end] range
@@ -261,12 +244,7 @@ def convert_reward_data(reward_df):
     reward_df["amount"] = reward_df["amount"].cumsum()
 
     # Rename columns
-    reward_df = reward_df.rename(
-        columns={
-            "sound_duration": "sound_duration_ms",
-            "amount": "dispensed_water_volume_uL"
-        }
-    )
+    reward_df = reward_df.rename(columns={"sound_duration": "sound_duration_ms", "amount": "dispensed_water_volume_uL"})
 
     # For every sound_on == True, create sound_off and valve_close rows
     for _, row in reward_df[reward_df["sound_on"]].iterrows():
@@ -284,10 +262,7 @@ def convert_reward_data(reward_df):
             valve_close_row["sound_on"] = False
 
         # Append new rows
-        reward_df = pd.concat(
-            [reward_df, pd.DataFrame([valve_close_row, sound_off_row])],
-            ignore_index=True
-        )
+        reward_df = pd.concat([reward_df, pd.DataFrame([valve_close_row, sound_off_row])], ignore_index=True)
 
     # Drop unused columns
     reward_df = reward_df.drop(columns=["valve_time", "sound_duration_ms"])
@@ -296,6 +271,7 @@ def convert_reward_data(reward_df):
     reward_df = reward_df.sort_values(by="time_us")
 
     return reward_df
+
 
 def convert_lick_data(lick_df):
     """Convert lick data to SL format.
@@ -306,5 +282,5 @@ def convert_lick_data(lick_df):
         DataFrame containing lick data with time_us and lick_duration columns.
     """
     lick_df = lick_df.copy()
-    lick_df['lick_state'] = True
+    lick_df["lick_state"] = True
     return lick_df

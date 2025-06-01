@@ -7,25 +7,22 @@ import numpy as np
 import pandas as pd
 
 from .parse import (
-    parse_period_info,
-    parse_session_events,
     parse_trial_info,
     process_gimbl_df,
+    parse_period_info,
+    parse_session_events,
 )
 
-
-# -----------------------------------------------------------------------------#
-# Default cue table (immutable so it can be re‑used across calls)              #
-# -----------------------------------------------------------------------------#
+# Default cue table (immutable so it can be re‑used across calls)
 DEFAULT_CUE_DEFINITIONS: tuple[dict[str, int | str], ...] = (
-    {'name': 'Gray_60cm',     'position_start': 0,   'position_end': 60},
-    {'name': 'Indicator',     'position_start': 60,  'position_end': 100},
-    {'name': 'Gray_30cm',     'position_start': 100, 'position_end': 130},
-    {'name': 'R1',            'position_start': 130, 'position_end': 150},
-    {'name': 'Gray_30cm',     'position_start': 150, 'position_end': 180},
-    {'name': 'R2',            'position_start': 180, 'position_end': 200},
-    {'name': 'Gray_30cm',     'position_start': 200, 'position_end': 230},
-    {'name': 'Teleportation', 'position_start': 230, 'position_end': 231},
+    {"name": "Gray_60cm", "position_start": 0, "position_end": 60},
+    {"name": "Indicator", "position_start": 60, "position_end": 100},
+    {"name": "Gray_30cm", "position_start": 100, "position_end": 130},
+    {"name": "R1", "position_start": 130, "position_end": 150},
+    {"name": "Gray_30cm", "position_start": 150, "position_end": 180},
+    {"name": "R2", "position_start": 180, "position_end": 200},
+    {"name": "Gray_30cm", "position_start": 200, "position_end": 230},
+    {"name": "Teleportation", "position_start": 230, "position_end": 231},
 )
 
 
@@ -61,9 +58,7 @@ def _extract_cue_changes(
     # ----------------------------- cue table --------------------------------- #
     cues_df = pd.DataFrame(cue_definitions, copy=False)
     if not {"name", "position_start", "position_end"}.issubset(cues_df.columns):
-        msg = (
-            "`cue_definitions` must supply 'name', 'position_start' and 'position_end' keys."
-        )
+        msg = "`cue_definitions` must supply 'name', 'position_start' and 'position_end' keys."
         raise ValueError(msg)
 
     # Stable integer labels for fast look‑ups
@@ -96,9 +91,9 @@ def export_gimbl_data(logs_df, out_dir: str = "."):
         out_dir (str): Destination folder for Feather files.
 
     Example:
-        >>> from sl_behavior.legacy.parse import parse_gimbl_log
-        >>> df, data = parse_gimbl_log("path/to/log.json")
-        >>> export_gimbl_data(df, out_dir='./Results')
+        # >>> from sl_behavior.legacy.parse import parse_gimbl_log
+        # >>> df, data = parse_gimbl_log("path/to/log.json")
+        # >>> export_gimbl_data(df, out_dir='./Results')
     """
     _, data = process_gimbl_df(logs_df)
 
@@ -124,10 +119,12 @@ def export_gimbl_data(logs_df, out_dir: str = "."):
             all_pos_diff[all_pos_diff < 0] = 0
             all_pos_csum = np.cumsum(all_pos_diff)
 
-            encoder_data = pd.DataFrame({
-                "time_us": data.path.time.time_us.to_numpy(),
-                "traveled_distance_cm": all_pos_csum,
-            })
+            encoder_data = pd.DataFrame(
+                {
+                    "time_us": data.path.time.time_us.to_numpy(),
+                    "traveled_distance_cm": all_pos_csum,
+                }
+            )
 
             encoder_data.to_feather(os.path.join(out_dir, "encoder_data.feather"))
 
@@ -158,8 +155,12 @@ def export_gimbl_data(logs_df, out_dir: str = "."):
             data.linear_controller.frame.to_feather(os.path.join(out_dir, "linear_controller_frame_avg.feather"))
 
     if hasattr(data, "spherical_controller"):
-        if hasattr(data, "spherical_controller_settings") and isinstance(data.spherical_controller_settings, pd.DataFrame):
-            data.spherical_controller_settings.to_feather(os.path.join(out_dir, "spherical_controller_settings.feather"))
+        if hasattr(data, "spherical_controller_settings") and isinstance(
+            data.spherical_controller_settings, pd.DataFrame
+        ):
+            data.spherical_controller_settings.to_feather(
+                os.path.join(out_dir, "spherical_controller_settings.feather")
+            )
         if hasattr(data.spherical_controller, "time") and isinstance(data.spherical_controller.time, pd.DataFrame):
             data.spherical_controller.time.to_feather(os.path.join(out_dir, "spherical_controller_time.feather"))
         if hasattr(data.spherical_controller, "frame") and isinstance(data.spherical_controller.frame, pd.DataFrame):

@@ -1,5 +1,5 @@
-from typing import Tuple, Dict, List, Any, Optional
 import json
+from typing import Any, Dict, List, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -28,12 +28,12 @@ def load_gimbl_log(file_loc: str) -> pd.DataFrame:
     df = set_data_types(df)
     return df
 
-def process_gimbl_df(df: pd.DataFrame, verbose: bool = False) -> Tuple[pd.DataFrame, GimblData]:
+
+def process_gimbl_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, GimblData]:
     """Processes a GIMBL DataFrame into a standardized DataFrame and GimblData object.
 
     Args:
         df (pd.DataFrame): The loaded GIMBL DataFrame.
-        verbose (bool, optional): Whether to print debug information.
 
     Returns:
         Tuple[pd.DataFrame, GimblData]: The processed DataFrame and GimblData object.
@@ -62,6 +62,7 @@ def process_gimbl_df(df: pd.DataFrame, verbose: bool = False) -> Tuple[pd.DataFr
     data.spherical_controller.frame = get_spherical_data_per_frame(df, frames)
 
     return df, data
+
 
 def parse_gimbl_log(file_loc: str, verbose: bool = False) -> Tuple[pd.DataFrame, GimblData]:
     """Parse a GIMBL log file into a DataFrame and GimblData object.
@@ -118,7 +119,7 @@ def parse_custom_msg(
     rename_columns: Dict[str, str] = None,
     msg_field: str = "msg",
     data_field: str = "data",
-    remove_nan: bool = False
+    remove_nan: bool = False,
 ) -> pd.DataFrame:
     """Parse custom messages from a DataFrame using specified fields.
 
@@ -196,7 +197,9 @@ def parse_position(df: pd.DataFrame) -> pd.DataFrame:
     position["y"] = position["position"].apply(lambda x: x[1] if isinstance(x, np.ndarray) else np.nan)
     position["z"] = position["position"].apply(lambda x: x[2] if isinstance(x, np.ndarray) else np.nan)
     # Convert Y axis rotation to heading in degrees
-    position["heading"] = position["heading"].apply(lambda x: np.asarray(x)[1] / 1000 if isinstance(x, list) else np.nan)
+    position["heading"] = position["heading"].apply(
+        lambda x: np.asarray(x)[1] / 1000 if isinstance(x, list) else np.nan
+    )
     return position
 
 
@@ -217,13 +220,15 @@ def get_position_per_frame(position: pd.DataFrame, frames: pd.DataFrame) -> pd.D
     # We’ll average the integer time_us (though time_us is typically consistent per group)
     frame_position = (
         frame_position.groupby(["frame", "name"], observed=True)
-        .agg({
-            "time_us": "mean",
-            "heading": "mean",
-            "x": "mean",
-            "y": "mean",
-            "z": "mean",
-        })
+        .agg(
+            {
+                "time_us": "mean",
+                "heading": "mean",
+                "x": "mean",
+                "y": "mean",
+                "z": "mean",
+            }
+        )
         .reset_index()
         .set_index(["frame", "name"])
     )
@@ -296,7 +301,9 @@ def parse_camera(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
     Returns:
         pd.DataFrame: The DataFrame indexed by camera frame and ID.
     """
-    camera = parse_custom_msg(df, "Camera Frame", ["id"], frames=frames, msg_field="data.msg.event", data_field="data.msg")
+    camera = parse_custom_msg(
+        df, "Camera Frame", ["id"], frames=frames, msg_field="data.msg.event", data_field="data.msg"
+    )
     camera = camera.rename_axis("cam_frame")
     if "id" in camera:
         camera["id"] = camera["id"].astype("int8")
@@ -319,7 +326,7 @@ def parse_reward(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
         "valveTime": "valve_time",
         "withSound": "sound_on",
         "frequency": "sound_freq",
-        "duration": "sound_duration"
+        "duration": "sound_duration",
     }
     reward = parse_custom_msg(
         df,
@@ -345,8 +352,14 @@ def parse_idle_sound(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
     Returns:
         pd.DataFrame: The DataFrame with idle sound data.
     """
-    idle = parse_custom_msg(df, "Idle Sound", ["type", "duration", "sound"], frames=frames,
-                            msg_field="data.msg.action", data_field="data.msg")
+    idle = parse_custom_msg(
+        df,
+        "Idle Sound",
+        ["type", "duration", "sound"],
+        frames=frames,
+        msg_field="data.msg.action",
+        data_field="data.msg",
+    )
     if not idle.empty:
         idle["type"] = idle["type"].astype("category")
         idle["sound"] = idle["sound"].astype("category")
@@ -362,16 +375,12 @@ def parse_session_info(df: pd.DataFrame) -> Dict[str, Optional[str]]:
     Returns:
         Dict[str, Optional[str]]: Dictionary containing date_time, project, and scene.
     """
-    info = parse_custom_msg(
-        df, "Info", ["time", "project", "scene"], rename_columns={"time": "date_time"}
-    ).drop(columns="frame", errors="ignore")
+    info = parse_custom_msg(df, "Info", ["time", "project", "scene"], rename_columns={"time": "date_time"}).drop(
+        columns="frame", errors="ignore"
+    )
     if not info.empty:
         info = info.to_numpy().transpose()
-        info = {
-            "date_time": info[1].item(),
-            "project": info[2].item(),
-            "scene": info[3].item()
-        }
+        info = {"date_time": info[1].item(), "project": info[2].item(), "scene": info[3].item()}
     else:
         info = {"date_time": None, "project": None, "scene": None}
     return info
@@ -389,23 +398,33 @@ def parse_spherical_settings(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataF
     """
     msg = "Spherical Controller Settings"
     fields = [
-        "name", "isActive", "loopPath",
-        "gain.forward", "gain.backward",
-        "gain.strafeLeft", "gain.strafeRight",
-        "gain.turnLeft", "gain.turnRight",
-        "trajectory.maxRotPerSec", "trajectory.angleOffsetBias",
-        "trajectory.minSpeed", "inputSmooth"
+        "name",
+        "isActive",
+        "loopPath",
+        "gain.forward",
+        "gain.backward",
+        "gain.strafeLeft",
+        "gain.strafeRight",
+        "gain.turnLeft",
+        "gain.turnRight",
+        "trajectory.maxRotPerSec",
+        "trajectory.angleOffsetBias",
+        "trajectory.minSpeed",
+        "inputSmooth",
     ]
     rename = {
         "isActive": "is_active",
-        "gain.forward": "gain_forward", "gain.backward": "gain_backward",
-        "gain.strafeLeft": "gain_strafe_left", "gain.strafeRight": "gain_strafe_right",
-        "gain.turnLeft": "gain_turn_left", "gain.turnRight": "gain_turn_right",
+        "gain.forward": "gain_forward",
+        "gain.backward": "gain_backward",
+        "gain.strafeLeft": "gain_strafe_left",
+        "gain.strafeRight": "gain_strafe_right",
+        "gain.turnLeft": "gain_turn_left",
+        "gain.turnRight": "gain_turn_right",
         "trajectory.maxRotPerSec": "trajectory_max_rot_per_sec",
         "trajectory.angleOffsetBias": "trajectory_angle_offset_bias",
         "trajectory.minSpeed": "trajectory_min_speed",
         "inputSmooth": "input_smooth",
-        "loopPath": "is_looping"
+        "loopPath": "is_looping",
     }
     settings = parse_custom_msg(df, msg, fields, frames=frames, rename_columns=rename)
     settings["index"] = settings.groupby("name", observed=True).cumcount()
@@ -446,7 +465,7 @@ def parse_linear_settings(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFram
         "loopPath": "is_looping",
         "gain.forward": "gain_forward",
         "gain.backward": "gain_backward",
-        "inputSmooth": "input_smooth"
+        "inputSmooth": "input_smooth",
     }
     settings = parse_custom_msg(df, msg, fields, frames=frames, rename_columns=rename)
     settings["index"] = settings.groupby("name", observed=True).cumcount()
@@ -502,7 +521,9 @@ def get_spherical_data_per_frame(df: pd.DataFrame, frames: pd.DataFrame) -> pd.D
     Returns:
         pd.DataFrame: The DataFrame with time_us, roll, yaw, pitch columns.
     """
-    data = parse_custom_msg(df, "Spherical Controller", ["name", "roll", "yaw", "pitch"], frames=frames, remove_nan=True)
+    data = parse_custom_msg(
+        df, "Spherical Controller", ["name", "roll", "yaw", "pitch"], frames=frames, remove_nan=True
+    )
     data = data.reset_index().set_index(["index", "name"])
     if data.empty:
         return data
@@ -521,7 +542,7 @@ def get_spherical_data_per_frame(df: pd.DataFrame, frames: pd.DataFrame) -> pd.D
     return grouped[["time_us", "roll", "yaw", "pitch"]]
 
 
-def parse_session_events(logs_df):# -> Any:
+def parse_session_events(logs_df):  # -> Any:
     """Extracts and standardizes session event markers from the logs DataFrame.
 
     Args:
@@ -538,28 +559,26 @@ def parse_session_events(logs_df):# -> Any:
             - StartTrial: Also indicates the end of the previous teleportation.
     """
     # Filter relevant event rows
-    session_events = logs_df.loc[
-        logs_df.msg.isin(['StartPeriod', 'StartTrial', 'EndTrial', 'EndPeriod'])
-    ].copy()
+    session_events = logs_df.loc[logs_df.msg.isin(["StartPeriod", "StartTrial", "EndTrial", "EndPeriod"])].copy()
 
     # Define conditions and corresponding new message labels
     conditions = [
-        (session_events['data.type'] == 'TASK') & (session_events['msg'] == 'StartPeriod'),
-        (session_events['data.type'] == 'TASK') & (session_events['msg'] == 'EndPeriod'),
-        (session_events['data.type'] == 'DARK') & (session_events['msg'] == 'StartPeriod'),
-        (session_events['data.type'] == 'DARK') & (session_events['msg'] == 'EndPeriod'),
-        (session_events['msg'] == 'EndTrial')
+        (session_events["data.type"] == "TASK") & (session_events["msg"] == "StartPeriod"),
+        (session_events["data.type"] == "TASK") & (session_events["msg"] == "EndPeriod"),
+        (session_events["data.type"] == "DARK") & (session_events["msg"] == "StartPeriod"),
+        (session_events["data.type"] == "DARK") & (session_events["msg"] == "EndPeriod"),
+        (session_events["msg"] == "EndTrial"),
     ]
-    choices = ['StartTask', 'EndTask', 'StartDark', 'EndDark', 'StartTeleportation']
+    choices = ["StartTask", "EndTask", "StartDark", "EndDark", "StartTeleportation"]
 
     # Apply new labels
-    session_events['msg'] = np.select(conditions, choices, default=session_events['msg'])
+    session_events["msg"] = np.select(conditions, choices, default=session_events["msg"])
 
     # Convert 'msg' to categorical
-    session_events['msg'] = session_events['msg'].astype('category')
+    session_events["msg"] = session_events["msg"].astype("category")
 
     # Select and return relevant columns
-    session_events = session_events[['time_us', 'msg']].reset_index(drop=True)
+    session_events = session_events[["time_us", "msg"]].reset_index(drop=True)
     return session_events
 
 
@@ -579,39 +598,41 @@ def parse_period_info(df):
     """
     # Extract start period information
     start_periods = (
-        df.loc[df['msg'] == 'StartPeriod', ['time_us', 'data.type', 'data.cueSet', 'data.isGuided']]
+        df.loc[df["msg"] == "StartPeriod", ["time_us", "data.type", "data.cueSet", "data.isGuided"]]
         .reset_index(drop=True)
-        .rename(columns={
-            'time_us': 'time_start_us',
-            'data.type': 'period',
-            'data.cueSet': 'set',
-            'data.isGuided': 'is_guided'
-        })
+        .rename(
+            columns={
+                "time_us": "time_start_us",
+                "data.type": "period",
+                "data.cueSet": "set",
+                "data.isGuided": "is_guided",
+            }
+        )
     )
 
     # Standardize period type and set columns
-    start_periods['period'] = start_periods['period'].str.upper().astype('category').cat.set_categories(['DARK', 'TASK'])
-    start_periods['set'] = start_periods['set'].astype('category')
+    start_periods["period"] = (
+        start_periods["period"].str.upper().astype("category").cat.set_categories(["DARK", "TASK"])
+    )
+    start_periods["set"] = start_periods["set"].astype("category")
 
     # Extract end period information
     end_periods = (
-        df.loc[df['msg'] == 'EndPeriod', ['time_us']]
-        .reset_index(drop=True)
-        .rename(columns={'time_us': 'time_end_us'})
+        df.loc[df["msg"] == "EndPeriod", ["time_us"]].reset_index(drop=True).rename(columns={"time_us": "time_end_us"})
     )
 
     # Merge start and end periods
     period_info = pd.concat([start_periods, end_periods], axis=1)
 
     # Fill missing end times with the last timestamp in the dataframe
-    period_info['time_end_us'] = period_info['time_end_us'].fillna(df['time_us'].iloc[-1])
+    period_info["time_end_us"] = period_info["time_end_us"].fillna(df["time_us"].iloc[-1])
 
     # Ensure time columns are of integer type
-    period_info['time_start_us'] = period_info['time_start_us'].astype(int)
-    period_info['time_end_us'] = period_info['time_end_us'].astype(int)
+    period_info["time_start_us"] = period_info["time_start_us"].astype(int)
+    period_info["time_end_us"] = period_info["time_end_us"].astype(int)
 
     # Reorder columns for clarity
-    period_info = period_info[['time_start_us', 'time_end_us', 'period', 'set', 'is_guided']]
+    period_info = period_info[["time_start_us", "time_end_us", "period", "set", "is_guided"]]
 
     return period_info
 
@@ -631,36 +652,40 @@ def parse_trial_info(df):
             - "status" (category): Result of trial (CORRECT, INCORRECT, NO_RESPONSE, INCOMPLETE).
     """
     # Extract trial start info
-    trial_info = df.loc[df['msg'] == 'StartTrial', ['time_us', 'data.trialNum', 'data.rewardSet', 'data.rewardingCueId']]
-    trial_info = trial_info.rename(columns={
-        'data.trialNum': 'trial_number',
-        'data.rewardSet': 'set',
-        'data.rewardingCueId': 'reward_id',
-        'time_us': 'time_start_us'
-    })
-    trial_info = trial_info.astype({'trial_number': 'int', 'set': 'category', 'reward_id': 'uint'})
+    trial_info = df.loc[
+        df["msg"] == "StartTrial", ["time_us", "data.trialNum", "data.rewardSet", "data.rewardingCueId"]
+    ]
+    trial_info = trial_info.rename(
+        columns={
+            "data.trialNum": "trial_number",
+            "data.rewardSet": "set",
+            "data.rewardingCueId": "reward_id",
+            "time_us": "time_start_us",
+        }
+    )
+    trial_info = trial_info.astype({"trial_number": "int", "set": "category", "reward_id": "uint"})
     trial_info = trial_info.reset_index(drop=True)
 
     # Extract trial end info
-    end_info = df.loc[df['msg'] == 'EndTrial', ['time_us', 'data.trialNum', 'data.status']]
-    end_info = end_info.rename(columns={
-        'data.trialNum': 'trial_number',
-        'data.status': 'status',
-        'time_us': 'time_end_us'
-    })
+    end_info = df.loc[df["msg"] == "EndTrial", ["time_us", "data.trialNum", "data.status"]]
+    end_info = end_info.rename(
+        columns={"data.trialNum": "trial_number", "data.status": "status", "time_us": "time_end_us"}
+    )
     end_info = end_info.reset_index(drop=True)
-    end_info = end_info.loc[end_info['trial_number'] >= 0]
+    end_info = end_info.loc[end_info["trial_number"] >= 0]
 
     # Merge start and end info
-    trial_info = pd.merge(trial_info, end_info, on="trial_number", how='outer')
+    trial_info = pd.merge(trial_info, end_info, on="trial_number", how="outer")
 
     # Handle incomplete trials
-    trial_info['status'] = trial_info['status'].fillna('INCOMPLETE').astype('category')
-    trial_info['status'] = trial_info['status'].replace('IN_PROGRESS', 'INCOMPLETE')
-    trial_info['status'] = trial_info['status'].cat.set_categories(['CORRECT', 'INCORRECT', 'NO_RESPONSE', 'INCOMPLETE'])
+    trial_info["status"] = trial_info["status"].fillna("INCOMPLETE").astype("category")
+    trial_info["status"] = trial_info["status"].replace("IN_PROGRESS", "INCOMPLETE")
+    trial_info["status"] = trial_info["status"].cat.set_categories(
+        ["CORRECT", "INCORRECT", "NO_RESPONSE", "INCOMPLETE"]
+    )
 
     # Reorder columns and drop duplicates
-    trial_info = trial_info[['trial_number', 'time_start_us', 'set', 'reward_id', 'status']]
-    trial_info = trial_info.drop_duplicates(subset='trial_number')
+    trial_info = trial_info[["trial_number", "time_start_us", "set", "reward_id", "status"]]
+    trial_info = trial_info.drop_duplicates(subset="trial_number")
 
     return trial_info
