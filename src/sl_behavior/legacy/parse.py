@@ -1,108 +1,34 @@
 import json
-from typing import Any, Dict, List, Tuple, Optional
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
-from .data import GimblData, FieldTypes
-from .transform import (
+from src.sl_behavior.legacy.data import GimblData, FieldTypes
+from src.sl_behavior.legacy.transform import (
     assign_frame_info,
     convert_lick_data,
     convert_reward_data,
-    ffill_missing_frame_info,
+    forward_fill_missing_frame_info,
 )
 
 
-def load_gimbl_log(file_loc: str) -> pd.DataFrame:
-    """Loads a GIMBL log JSON file and returns a normalized DataFrame with correct data types.
+def _set_data_types(df: pd.DataFrame) -> pd.DataFrame:
+    """Applies predefined datatypes to the input DataFrame fields.
+
+    This service function is used to configure the input Pandas DataFrame, constructed from the data loaded from the
+    GIMBL JSON log, to use the correct types for each column (field).
 
     Args:
-        file_loc (str): The file path to the GIMBL log JSON file.
+        df: The Pandas DataFrame to convert.
 
     Returns:
-        pd.DataFrame: The loaded and type-corrected DataFrame.
+        The updated Pandas DataFrame that now uses correct datatypes for each column.
     """
-    with open(file_loc) as data_file:
-        file_data = json.load(data_file)
-    df = pd.json_normalize(file_data)
-    df = set_data_types(df)
-    return df
 
-
-def process_gimbl_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, GimblData]:
-    """Processes a GIMBL DataFrame into a standardized DataFrame and GimblData object.
-
-    Args:
-        df (pd.DataFrame): The loaded GIMBL DataFrame.
-
-    Returns:
-        Tuple[pd.DataFrame, GimblData]: The processed DataFrame and GimblData object.
-    """
-    data = GimblData()
-
-    # Populate GimblData object
-    data.info = parse_session_info(df)
-    frames = parse_frames(df)
-    data.frames = frames
-    data.position.time = parse_position(df)
-    data.position.frame = get_position_per_frame(data.position.time, frames)
-    data.path.time = parse_path(df)
-    data.path.frame = get_path_position_per_frame(df, frames)
-    data.camera = parse_camera(df, frames)
-    data.reward = parse_reward(df, frames)
-    data.reward = convert_reward_data(data.reward)
-    data.lick = parse_custom_msg(df, "Lick", [], frames=frames)
-    data.lick = convert_lick_data(data.lick)
-    data.idle.sound = parse_idle_sound(df, frames)
-    data.linear_controller.settings = parse_linear_settings(df, frames)
-    data.spherical_controller_settings = parse_spherical_settings(df, frames)
-    data.linear_controller.time = parse_linear_data(df)
-    data.spherical_controller.time = parse_spherical_data(df)
-    data.linear_controller.frame = get_linear_data_per_frame(df, frames)
-    data.spherical_controller.frame = get_spherical_data_per_frame(df, frames)
-
-    return df, data
-
-
-def parse_gimbl_log(file_loc: str, verbose: bool = False) -> Tuple[pd.DataFrame, GimblData]:
-    """Parse a GIMBL log file into a DataFrame and GimblData object.
-
-    Args:
-        file_loc (str): The file path to the GIMBL log JSON file.
-        verbose (bool, optional): Whether to print debug information.
-
-    Returns:
-        Tuple[pd.DataFrame, GimblData]: The parsed DataFrame and GimblData object.
-
-    Example:
-        >>> df, data = parse_gimbl_log("path/to/log.json")
-        >>> print(df.head())
-        >>> print(data.info)
-    """
-    df = load_gimbl_log(file_loc)
-
-    # Convert times to microseconds relative to the “Info” timestamp (in EST, converted to UTC).
-    start_time_est = pd.Timestamp(df[df.msg == "Info"]["data.time"].to_numpy()[0], tz="EST")
-    start_time_utc = start_time_est.tz_convert("UTC")
-    df["time"] = pd.to_timedelta(df["time"], unit="ms")
-    df["absolute_time"] = start_time_utc + df["time"]
-    df["time_us"] = df["absolute_time"].astype("int64") // 1000
-    df = df.drop(columns=["time", "absolute_time"])
-    df = df[["time_us"] + [c for c in df.columns if c != "time_us"]]
-
-    return process_gimbl_df(df, verbose=verbose)
-
-
-def set_data_types(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply predefined field types to a DataFrame.
-
-    Args:
-        df (pd.DataFrame): The DataFrame to convert.
-
-    Returns:
-        pd.DataFrame: The updated DataFrame with new types.
-    """
+    # Extracts the mapping of fields to their expected datatypes
     fields = FieldTypes().fields
+
+    # Applies the datatypes to each column and, for numeric columns, converts Null values to 0.
     for key in fields.keys():
         if key in df:
             if fields[key] == "int":
@@ -111,41 +37,71 @@ def set_data_types(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def parse_custom_msg(
+def _load_gimbl_log(log_file_path: Path) -> pd.DataFrame:
+    """Loads data stored in the GIMBL log JSON file and returns it as a normalized Polar Dataframes with correct
+    datatypes.
+
+    Args:
+        log_file_path: The path to the GIMBL log JSON file.
+
+    Returns:
+        The loaded data as a type-corrected Pandas DataFrame.
+    """
+
+    # Loads the data
+    with open(log_file_path) as data_file:
+        file_data = json.load(data_file)
+
+    # Converts to DataFrame
+    df = pd.json_normalize(file_data)
+
+    # Applies datatypes
+    df = _set_data_types(df)
+    return df
+
+
+def _parse_custom_msg(
     df: pd.DataFrame,
-    msg: str,
-    fields: List[str],
+    message: str,
+    fields: list[str],
     frames: pd.DataFrame = pd.DataFrame(),
-    rename_columns: Dict[str, str] = None,
+    rename_columns: dict[str, str] = None,
     msg_field: str = "msg",
     data_field: str = "data",
     remove_nan: bool = False,
 ) -> pd.DataFrame:
-    """Parse custom messages from a DataFrame using specified fields.
+    """Parses target GIMBL messages from a DataFrame using specified fields.
+
+    This service function serves as a wrapper for processing various GIMBl messages stored in the input DataFrame. It is
+    iteratively applied to the DataFrame that stores raw data loaded from the GIMBL JSON log to convert it into a format
+    compatible with all other processing functions in this package.
 
     Args:
-        df (pd.DataFrame): The main DataFrame.
-        msg (str): The message identifier to parse.
-        fields (List[str]): The list of field names to extract.
-        frames (pd.DataFrame, optional): Frame data for alignment.
-        rename_columns (Dict[str, str], optional): Column rename mappings.
-        msg_field (str, optional): Name of the message column.
-        data_field (str, optional): Name of the data column.
-        remove_nan (bool, optional): Whether to remove NaN values.
+        df: The Pandas DataFrame that stores the data loaded from the GIMBL JSON log file.
+        message: The identifier (type) of the message to parse.
+        fields: The list of field (column) names from which to extract the message data.
+        frames: A Pandas DataFrame that stores the Mesoscope frame data, including timestamps. This allows optionally
+            aligning parsed messages to Mesoscope frame acquisition times.
+        rename_columns: A mapping of original column names to new names. This allows optionally renaming the extracted
+            columns.
+        msg_field: The name of the column in the input DataFrame where to search for the message identifier.
+        data_field: The name of the column in the input DataFrame from which to extract the message data.
+        remove_nan: Determines whether to remove NaN values from the extracted data.
 
     Returns:
-        pd.DataFrame: A DataFrame with the relevant parsed fields.
+        The Pandas DataFrame that stores the parsed data.
     """
     data = pd.DataFrame(columns=["index", "time_us", "frame"] + fields).set_index("index")
     if msg_field in df:
-        idx = df[msg_field] == msg
+        idx = df[msg_field] == message
+        # noinspection PyTypeChecker
         if any(idx):
             data_fields = ["time_us"] + [f"{data_field}.{field}" for field in fields]
             missing = [col for col in data_fields if col not in df.columns]
             if missing:
                 raise NameError(f"Missing columns for parse_custom_msg: {missing}")
             data = df.loc[idx, data_fields].reset_index().set_index("index")
-            # Rename any specified columns
+            # Renames any specified columns
             for field in fields:
                 original_col = f"{data_field}.{field}"
                 if rename_columns is not None and field in rename_columns:
@@ -153,7 +109,7 @@ def parse_custom_msg(
                 else:
                     data = data.rename(columns={original_col: field})
 
-            # If frames exist, assign microscope frame info
+            # If frames exist, assigns Mesoscope frame indices to parsed messages
             if not frames.empty:
                 data = assign_frame_info(data, frames, remove_nan=remove_nan)
             else:
@@ -164,32 +120,33 @@ def parse_custom_msg(
     return data
 
 
-def parse_frames(df: pd.DataFrame) -> pd.DataFrame:
-    """Extract microscope frame timestamps.
+def _parse_frames(df: pd.DataFrame) -> pd.DataFrame:
+    """Extracts Mesoscope frame timestamps from the input raw DataFrame.
 
     Args:
-        df (pd.DataFrame): The main DataFrame.
+        df: The Pandas DataFrame that stores the data loaded from the GIMBL JSON log file.
 
     Returns:
-        pd.DataFrame: A DataFrame indexed by frame containing time_us.
+        The Pandas DataFrame indexed by Mesoscope frames and containing the 'time_us' column.
     """
-    frames = parse_custom_msg(df, "microscope frame", [], msg_field="data.msg")
-    # parse_custom_msg adds a 'frame' col, which we don’t actually need here
+    frames = _parse_custom_msg(df, "microscope frame", [], msg_field="data.msg")
+
+    # parse_custom_msg adds a 'frame' col, which we don’t need here, so removes this extra column
     frames = frames.drop(columns="frame")
     frames = frames.rename_axis("frame")
     return frames
 
 
 def parse_position(df: pd.DataFrame) -> pd.DataFrame:
-    """Parse actor position and heading information.
+    """Parses actor (animal) position and heading information from the input raw DataFrame.
 
     Args:
-        df (pd.DataFrame): The DataFrame containing position entries.
+        df: The Pandas DataFrame that stores the data loaded from the GIMBL JSON log file.
 
     Returns:
         pd.DataFrame: A DataFrame with time_us, x, y, z, heading columns.
     """
-    position = parse_custom_msg(df, "Position", ["name", "position", "heading"])
+    position = _parse_custom_msg(df, "Position", ["name", "position", "heading"])
     position = position.reset_index().set_index(["index", "name"]).drop(columns="frame")
     # Convert position to cm
     position["position"] = position["position"].apply(lambda x: np.asarray(x) / 100 if isinstance(x, list) else x)
@@ -236,7 +193,7 @@ def get_position_per_frame(position: pd.DataFrame, frames: pd.DataFrame) -> pd.D
     frame_position["position"] = frame_position[["x", "y", "z"]].to_numpy().tolist()
 
     # Fill missing
-    frame_position = ffill_missing_frame_info(
+    frame_position = forward_fill_missing_frame_info(
         frame_position,
         frames,
         nan_fill=False,
@@ -249,12 +206,12 @@ def parse_path(df: pd.DataFrame) -> pd.DataFrame:
     """Parse path position data.
 
     Args:
-        df (pd.DataFrame): The DataFrame containing path data.
+        df: The Pandas DataFrame that stores the data loaded from the GIMBL JSON log file.
 
     Returns:
         pd.DataFrame: The DataFrame with time_us, path, and position columns.
     """
-    path = parse_custom_msg(df, "Path Position", ["name", "pathName", "position"], rename_columns={"pathName": "path"})
+    path = _parse_custom_msg(df, "Path Position", ["name", "pathName", "position"], rename_columns={"pathName": "path"})
     path = path.reset_index().set_index(["index", "name"]).drop(columns="frame")
     path["position"] = path["position"].apply(lambda x: x / 100 if pd.notnull(x) else np.nan)
     return path
@@ -270,7 +227,7 @@ def get_path_position_per_frame(df: pd.DataFrame, frames: pd.DataFrame) -> pd.Da
     Returns:
         pd.DataFrame: A DataFrame with time_us, path, position columns.
     """
-    path = parse_custom_msg(
+    path = _parse_custom_msg(
         df,
         "Path Position",
         ["name", "pathName", "position"],
@@ -285,7 +242,7 @@ def get_path_position_per_frame(df: pd.DataFrame, frames: pd.DataFrame) -> pd.Da
     path = path.groupby(["frame", "name", "path"], observed=True).first()
     path = path.reset_index().drop_duplicates(subset=["frame", "name"], keep="first")
     path = path.reset_index().set_index(["frame", "name"]).drop(columns="index")
-    path = ffill_missing_frame_info(path, frames, nan_fill=False, subset_columns=["time_us", "path", "position"])
+    path = forward_fill_missing_frame_info(path, frames, nan_fill=False, subset_columns=["time_us", "path", "position"])
     if not path.empty:
         path = path.bfill(axis=0)
     return path[["time_us", "path", "position"]]
@@ -295,13 +252,13 @@ def parse_camera(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
     """Parse camera frame info and align it with microscope frames.
 
     Args:
-        df (pd.DataFrame): The main DataFrame.
+        df: The Pandas DataFrame that stores the data loaded from the GIMBL JSON log file.
         frames (pd.DataFrame): Frame timestamps.
 
     Returns:
         pd.DataFrame: The DataFrame indexed by camera frame and ID.
     """
-    camera = parse_custom_msg(
+    camera = _parse_custom_msg(
         df, "Camera Frame", ["id"], frames=frames, msg_field="data.msg.event", data_field="data.msg"
     )
     camera = camera.rename_axis("cam_frame")
@@ -314,7 +271,7 @@ def parse_reward(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
     """Parse reward info from the log.
 
     Args:
-        df (pd.DataFrame): The main DataFrame.
+        df: The Pandas DataFrame that stores the data loaded from the GIMBL JSON log file.
         frames (pd.DataFrame): Frame timestamps.
 
     Returns:
@@ -328,7 +285,7 @@ def parse_reward(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
         "frequency": "sound_freq",
         "duration": "sound_duration",
     }
-    reward = parse_custom_msg(
+    reward = _parse_custom_msg(
         df,
         msg,
         fields,
@@ -346,13 +303,13 @@ def parse_idle_sound(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
     """Parse idle sound info from the log.
 
     Args:
-        df (pd.DataFrame): The main DataFrame.
+        df: The Pandas DataFrame that stores the data loaded from the GIMBL JSON log file.
         frames (pd.DataFrame): Frame timestamps.
 
     Returns:
         pd.DataFrame: The DataFrame with idle sound data.
     """
-    idle = parse_custom_msg(
+    idle = _parse_custom_msg(
         df,
         "Idle Sound",
         ["type", "duration", "sound"],
@@ -366,16 +323,16 @@ def parse_idle_sound(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFrame:
     return idle
 
 
-def parse_session_info(df: pd.DataFrame) -> Dict[str, Optional[str]]:
+def parse_session_info(df: pd.DataFrame) -> dict[str, str | None]:
     """Read session info from lines labeled 'Info'.
 
     Args:
-        df (pd.DataFrame): The main DataFrame.
+        df: The Pandas DataFrame that stores the data loaded from the GIMBL JSON log file.
 
     Returns:
         Dict[str, Optional[str]]: Dictionary containing date_time, project, and scene.
     """
-    info = parse_custom_msg(df, "Info", ["time", "project", "scene"], rename_columns={"time": "date_time"}).drop(
+    info = _parse_custom_msg(df, "Info", ["time", "project", "scene"], rename_columns={"time": "date_time"}).drop(
         columns="frame", errors="ignore"
     )
     if not info.empty:
@@ -390,7 +347,7 @@ def parse_spherical_settings(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataF
     """Parse spherical controller settings.
 
     Args:
-        df (pd.DataFrame): The main DataFrame.
+        df: The Pandas DataFrame that stores the data loaded from the GIMBL JSON log file.
         frames (pd.DataFrame): Frame timestamps.
 
     Returns:
@@ -426,7 +383,7 @@ def parse_spherical_settings(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataF
         "inputSmooth": "input_smooth",
         "loopPath": "is_looping",
     }
-    settings = parse_custom_msg(df, msg, fields, frames=frames, rename_columns=rename)
+    settings = _parse_custom_msg(df, msg, fields, frames=frames, rename_columns=rename)
     settings["index"] = settings.groupby("name", observed=True).cumcount()
     return settings.set_index(["index", "name"])
 
@@ -435,12 +392,12 @@ def parse_spherical_data(df: pd.DataFrame) -> pd.DataFrame:
     """Parse spherical controller data.
 
     Args:
-        df (pd.DataFrame): The main DataFrame.
+        df: The Pandas DataFrame that stores the data loaded from the GIMBL JSON log file.
 
     Returns:
         pd.DataFrame: The DataFrame with roll, yaw, pitch columns.
     """
-    data = parse_custom_msg(df, "Spherical Controller", ["name", "roll", "yaw", "pitch"])
+    data = _parse_custom_msg(df, "Spherical Controller", ["name", "roll", "yaw", "pitch"])
     data = data.reset_index().set_index(["index", "name"]).drop(columns="frame", errors="ignore")
     data["roll"] = data["roll"] / 100
     data["pitch"] = data["pitch"] / 100
@@ -452,7 +409,7 @@ def parse_linear_settings(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFram
     """Parse linear controller settings.
 
     Args:
-        df (pd.DataFrame): The main DataFrame.
+        df: The Pandas DataFrame that stores the data loaded from the GIMBL JSON log file.
         frames (pd.DataFrame): Frame timestamps.
 
     Returns:
@@ -467,7 +424,7 @@ def parse_linear_settings(df: pd.DataFrame, frames: pd.DataFrame) -> pd.DataFram
         "gain.backward": "gain_backward",
         "inputSmooth": "input_smooth",
     }
-    settings = parse_custom_msg(df, msg, fields, frames=frames, rename_columns=rename)
+    settings = _parse_custom_msg(df, msg, fields, frames=frames, rename_columns=rename)
     settings["index"] = settings.groupby("name", observed=True).cumcount()
     return settings.set_index(["index", "name"])
 
@@ -476,12 +433,12 @@ def parse_linear_data(df: pd.DataFrame) -> pd.DataFrame:
     """Parse linear controller data.
 
     Args:
-        df (pd.DataFrame): The main DataFrame.
+        df: The Pandas DataFrame that stores the data loaded from the GIMBL JSON log file.
 
     Returns:
         pd.DataFrame: The DataFrame with movement information.
     """
-    data = parse_custom_msg(df, "Linear Controller", ["name", "move"])
+    data = _parse_custom_msg(df, "Linear Controller", ["name", "move"])
     data = data.reset_index().set_index(["index", "name"]).drop(columns="frame", errors="ignore")
     data["move"] = data["move"] / 100
     return data
@@ -497,7 +454,7 @@ def get_linear_data_per_frame(df: pd.DataFrame, frames: pd.DataFrame) -> pd.Data
     Returns:
         pd.DataFrame: The DataFrame with time_us, move columns.
     """
-    data = parse_custom_msg(df, "Linear Controller", ["name", "move"], frames=frames, remove_nan=True)
+    data = _parse_custom_msg(df, "Linear Controller", ["name", "move"], frames=frames, remove_nan=True)
     data = data.reset_index().set_index(["index", "name"])
     if data.empty:
         return data
@@ -506,8 +463,8 @@ def get_linear_data_per_frame(df: pd.DataFrame, frames: pd.DataFrame) -> pd.Data
     grouped = data.groupby(["frame", "name"], observed=True).agg({"move": "sum", "time_us": "first"}).reset_index()
     grouped = grouped.set_index(["frame", "name"])
     # Forward fill missing
-    grouped = ffill_missing_frame_info(grouped, frames, nan_fill=True, subset_columns=["move"])
-    grouped = ffill_missing_frame_info(grouped, frames, nan_fill=False, subset_columns=["move"])
+    grouped = forward_fill_missing_frame_info(grouped, frames, nan_fill=True, subset_columns=["move"])
+    grouped = forward_fill_missing_frame_info(grouped, frames, nan_fill=False, subset_columns=["move"])
     return grouped[["time_us", "move"]]
 
 
@@ -521,7 +478,7 @@ def get_spherical_data_per_frame(df: pd.DataFrame, frames: pd.DataFrame) -> pd.D
     Returns:
         pd.DataFrame: The DataFrame with time_us, roll, yaw, pitch columns.
     """
-    data = parse_custom_msg(
+    data = _parse_custom_msg(
         df, "Spherical Controller", ["name", "roll", "yaw", "pitch"], frames=frames, remove_nan=True
     )
     data = data.reset_index().set_index(["index", "name"])
@@ -537,8 +494,8 @@ def get_spherical_data_per_frame(df: pd.DataFrame, frames: pd.DataFrame) -> pd.D
         .set_index(["frame", "name"])
     )
     # Forward fill missing
-    grouped = ffill_missing_frame_info(grouped, frames, nan_fill=True, subset_columns=["roll", "yaw", "pitch"])
-    grouped = ffill_missing_frame_info(grouped, frames, nan_fill=False, subset_columns=["roll", "yaw", "pitch"])
+    grouped = forward_fill_missing_frame_info(grouped, frames, nan_fill=True, subset_columns=["roll", "yaw", "pitch"])
+    grouped = forward_fill_missing_frame_info(grouped, frames, nan_fill=False, subset_columns=["roll", "yaw", "pitch"])
     return grouped[["time_us", "roll", "yaw", "pitch"]]
 
 
@@ -689,3 +646,67 @@ def parse_trial_info(df):
     trial_info = trial_info.drop_duplicates(subset="trial_number")
 
     return trial_info
+
+
+def process_gimbl_df(df: pd.DataFrame) -> tuple[pd.DataFrame, GimblData]:
+    """Processes a GIMBL DataFrame into a standardized DataFrame and GimblData object.
+
+    Args:
+        df (pd.DataFrame): The loaded GIMBL DataFrame.
+
+    Returns:
+        Tuple[pd.DataFrame, GimblData]: The processed DataFrame and GimblData object.
+    """
+    data = GimblData()
+
+    # Populate GimblData object
+    data.info = parse_session_info(df)
+    frames = _parse_frames(df)
+    data.frames = frames
+    data.position.time = parse_position(df)
+    data.position.frame = get_position_per_frame(data.position.time, frames)
+    data.path.time = parse_path(df)
+    data.path.frame = get_path_position_per_frame(df, frames)
+    data.camera = parse_camera(df, frames)
+    data.reward = parse_reward(df, frames)
+    data.reward = convert_reward_data(data.reward)
+    data.lick = _parse_custom_msg(df, "Lick", [], frames=frames)
+    data.lick = convert_lick_data(data.lick)
+    data.idle.sound = parse_idle_sound(df, frames)
+    data.linear_controller.settings = parse_linear_settings(df, frames)
+    data.spherical_controller_settings = parse_spherical_settings(df, frames)
+    data.linear_controller.time = parse_linear_data(df)
+    data.spherical_controller.time = parse_spherical_data(df)
+    data.linear_controller.frame = get_linear_data_per_frame(df, frames)
+    data.spherical_controller.frame = get_spherical_data_per_frame(df, frames)
+
+    return df, data
+
+
+def parse_gimbl_log(file_loc: str, verbose: bool = False) -> tuple[pd.DataFrame, GimblData]:
+    """Parse a GIMBL log file into a DataFrame and GimblData object.
+
+    Args:
+        file_loc (str): The file path to the GIMBL log JSON file.
+        verbose (bool, optional): Whether to print debug information.
+
+    Returns:
+        Tuple[pd.DataFrame, GimblData]: The parsed DataFrame and GimblData object.
+
+    Example:
+        # >>> df, data = parse_gimbl_log("path/to/log.json")
+        # >>> print(df.head())
+        # >>> print(data.info)
+    """
+    df = _load_gimbl_log(file_loc)
+
+    # Convert times to microseconds relative to the “Info” timestamp (in EST, converted to UTC).
+    start_time_est = pd.Timestamp(df[df.msg == "Info"]["data.time"].to_numpy()[0], tz="EST")
+    start_time_utc = start_time_est.tz_convert("UTC")
+    df["time"] = pd.to_timedelta(df["time"], unit="ms")
+    df["absolute_time"] = start_time_utc + df["time"]
+    df["time_us"] = df["absolute_time"].astype("int64") // 1000
+    df = df.drop(columns=["time", "absolute_time"])
+    df = df[["time_us"] + [c for c in df.columns if c != "time_us"]]
+
+    return process_gimbl_df(df, verbose=verbose)

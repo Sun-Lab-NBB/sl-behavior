@@ -87,7 +87,7 @@ def export_gimbl_data(logs_df, out_dir: str = "."):
     """Exports each table from 'data' (returned by parse_gimbl_log) to individual Feather files.
 
     Args:
-        data (GimblData): Parsed GimblData object containing various DataFrames.
+        logs_df (GimblData): Parsed GimblData object containing various DataFrames.
         out_dir (str): Destination folder for Feather files.
 
     Example:

@@ -7,7 +7,7 @@ from typing import Any
 from dataclasses import field, dataclass
 
 import numpy as np
-import polars as pl
+import pandas as pd
 from numpy.typing import NDArray
 from scipy.interpolate import Rbf, splev, splprep
 from scipy.spatial.distance import cdist
@@ -33,32 +33,32 @@ class IdleData:
 
 @dataclass
 class TimeData:
-    """Stores managed session's time data, which includes timestamps for each Unity frame.
+    """Stores managed session's time data, which includes timestamps for each Mesoscope frame.
 
     Attributes:
         time: A NumPy array of session timestamps.
-        frame: A Polars DataFrame describing the state of the Virtual Reality task at each timestamp.
+        frame: A Pandas DataFrame describing the state of the Virtual Reality task at each Mesoscope frame timestamp.
     """
 
     time: NDArray[Any] | None = None
-    frame: pl.DataFrame | None = None
+    frame: pd.DataFrame | None = None
 
 
 @dataclass
 class ControllerData:
     """Stores managed session's Gimbl Virtual Reality controller data.
 
-    Primarily, this includes the settings of the Gimbl task controller at each Unity frame.
+    Primarily, this includes the settings of the Gimbl task controller at each Mesoscope frame timestamp.
 
     Attributes:
         settings: A dictionary that stores the VR controller settings or configuration parameters.
         time: A NumPy array that stores the timestamps for controller parameter updates.
-        frame: A Polars DataFrame that captures the controller state at each Unity frame.
+        frame: A Pandas DataFrame that captures the controller state at each Mesoscope frame.
     """
 
     settings: dict[str, Any] | None = None
     time: NDArray[Any] | None = None
-    frame: pl.DataFrame | None = None
+    frame: pd.DataFrame | None = None
 
 
 @dataclass
@@ -75,8 +75,9 @@ class GimblData:
     Attributes:
         time: A NumPy array that stores the global (UTC) session timestamps.
         info: A dictionary that stores the session's general information and metadata.
-        frames A Polars DataFrame that stores Unity frame data (e.g., frame indices, timestamps).
-        position: A TimeData instance that stores position data, such as animal's VR coordinates at each Unity frame.
+        frames A Pandas DataFrame that stores Mesoscope frame data (e.g., frame indices, timestamps).
+        position: A TimeData instance that stores position data, such as animal's VR coordinates at each Mesoscope
+            frame.
         path: A TimeData instance that stores VR path-related data, such as path names or positions along the path.
         camera: A dictionary that stores the face-camera data (e.g., camera parameters or transforms).
         reward: A dictionary that stores the water reward data (e.g., reward timings or amounts).
@@ -90,7 +91,7 @@ class GimblData:
 
     time: NDArray[Any] | None = None
     info: dict[str, Any] | None = None
-    frames: pl.DataFrame | None = None
+    frames: pd.DataFrame | None = None
     position: TimeData = field(default_factory=TimeData)
     path: TimeData = field(default_factory=TimeData)
     camera: dict[str, Any] | None = None
@@ -115,35 +116,24 @@ class GimblData:
         """
 
         # Filters the data for the requested path
-        path_mask = self.path.frame["path"] == path
-        if path_mask.sum() == 0:
-            message = f"Could not find path with name {path} inside the .path.frame attribute"
+        ind = self.path.frame["path"] == path
+        # noinspection PyTypeChecker
+        if sum(ind) == 0:
+            message = f"Could not find path with name {path} inside the .path.frame attribute."
             console.error(message=message, error=NameError)
 
-        # Gets positions for the path
-        pos_df = self.position.frame.filter(path_mask).select(["x", "y", "z"])
-        path_positions = self.path.frame.filter(path_mask).select(["position"])
-
-        # Combines the dataframes
-        df = pl.concat([pos_df, path_positions.rename({"position": "path"})], how="horizontal")
+        # Gets position values for the target path
+        df = self.position.frame.loc[ind, ["x", "y", "z"]].copy()
+        df["path"] = self.path.frame.loc[ind, "position"]
 
         # Sorts by path and removes duplicates based on rounded path values
-        df = (
-            df.sort("path")
-            .with_columns(pl.col("path").round(0).alias("path_r"))
-            .unique(subset="path_r", keep="first")
-            .drop("path_r")
-        )
-
-        # Extracts arrays for spline fitting
-        x_vals = df["x"].to_numpy()
-        y_vals = df["y"].to_numpy()
-        z_vals = df["z"].to_numpy()
-        path_vals = df["path"].to_numpy()
+        df = df.sort_values(by=["path"])
+        df["path_r"] = df["path"].round(0)
+        df = df.drop_duplicates(subset="path_r")
 
         # Interpolates XYZ coordinates for each path position using B-spline interpolation
-        # noinspection PyTupleAssignmentBalance
-        tck, _ = splprep(x=[x_vals, y_vals, z_vals], u=path_vals, s=0.01)
+        tck, _ = splprep([df["x"], df["y"], df["z"]], u=df["path"], s=0.01)
+        # noinspection PyTypeChecker
         xi, yi, zi = splev(values, tck)
 
         # Generates and returns the multidimensional NumPy array that stores interpolated XYZ coordinate values
@@ -152,7 +142,7 @@ class GimblData:
             return result.flatten()
         return result
 
-    def xyz_to_path(self, values: NDArray[Any]) -> pl.DataFrame:
+    def xyz_to_path(self, values: NDArray[Any]) -> pd.DataFrame:
         """Interpolate path positions from the input XYZ coordinates using a radial basis function (RBF).
 
         For each input 3D coordinate, this method determines the closest path among all available paths, then evaluates
@@ -165,59 +155,49 @@ class GimblData:
             A DataFrame containing the inferred path positions. It has two columns: "position" (the path position) and
                 "path" (the path name).
         """
+
+        # Extracts all path names
         fits = []
-        path_names = self.path.frame["path"].unique().to_numpy()
+        path_names = self.path.frame["path"].unique()
 
+        # Fits each available path to the input XYZ coordinates to determine which path most closely matches the given
+        # set of coordinates
         for path_name in path_names:
-            # Filters for the current path
-            path_mask = self.path.frame["path"] == path_name
+            ind = self.path.frame["path"] == path_name
+            df = self.position.frame.loc[ind, ["x", "y", "z"]]
+            df["path"] = self.path.frame.loc[ind, "position"]
+            df = df.sort_values(by=["path"])
+            df["path_r"] = df["path"].round(0)
+            df = df.drop_duplicates(subset="path_r")
 
-            # Gets positions for this path
-            pos_df = self.position.frame.filter(path_mask).select(["x", "y", "z"])
-            path_positions = self.path.frame.filter(path_mask).select(["position"])
+            fits.append(Rbf(df["x"], df["y"], df["z"], df["path"], smooth=0.01))
 
-            # Combines and prepares the data
-            df = pl.concat([pos_df, path_positions.rename({"position": "path"})], how="horizontal")
-            df = (
-                df.sort("path")
-                .with_columns(pl.col("path").round(0).alias("path_r"))
-                .unique(subset="path_r", keep="first")
-            )
-
-            # Creates the RBF interpolator
-            x_vals = df["x"].to_numpy()
-            y_vals = df["y"].to_numpy()
-            z_vals = df["z"].to_numpy()
-            path_vals = df["path"].to_numpy()
-
-            fits.append(Rbf(x_vals, y_vals, z_vals, path_vals, smooth=0.01))
-
-        # Determines the closest path for the processed collection of XYZ values
-        obs = self.position.frame.select(["x", "y", "z"]).to_numpy()
+        # Determines the closest path for the processed collection of XYZ values based on the distance between the
+        # fitted path and the 'ground' XYZ data
+        obs = self.position.frame.loc[:, ["x", "y", "z"]].to_numpy()
         dist = cdist(values, obs)
 
         # Interpolates path names and positions for each set of XYZ coordinates (for each position)
-        result_data = []
+        result = []
         for i, value in enumerate(values):
             closest_idx = np.argmin(dist[i, :])
-            # noinspection PyTypeChecker
-            path_val = self.path.frame.row(closest_idx, named=True)["path"]
+            path_val = self.path.frame.loc[closest_idx, "path"].item()
             path_ind = np.argwhere(path_names == path_val)[0][0]
 
             # noinspection PyTypeChecker
             pos = fits[path_ind](value[0], value[1], value[2])
-            result_data.append({"position": pos, "path": path_names[path_ind]})
+            result.append({"position": pos, "path": path_names[path_ind]})
 
-        # Converts the result to a Polars dataframe and returns it to caller.
-        return pl.DataFrame(result_data)
+        # Converts the result to a Pandas dataframe and returns it to caller.
+        return pd.DataFrame(result)
 
 
-@pl.api.register_dataframe_namespace("vr2p")
+@pd.api.extensions.register_dataframe_accessor("vr2p")
 class Vr2pNamespace:
-    """A polars DataFrame namespace that provides VR2P-specific methods for analyzing and transforming virtual reality
+    """A Pandas DataFrame namespace that provides VR2P-specific methods for analyzing and transforming virtual reality
     data.
 
-    This namespace allows rolling speed calculations and timed value assignments in a polars DataFrame, ensuring the
+    This namespace allows rolling speed calculations and timed value assignments in a Pandas DataFrame, ensuring the
     necessary columns and formats are present. It is used when converting Gimbl .json logs to .feather files used in
     the modern Sun lab pipeline.
 
@@ -225,13 +205,13 @@ class Vr2pNamespace:
         df: The DataFrame to access.
 
     Attributes:
-        _df: Stores the Polars DataFrame wrapped by the class.
+        _df: Stores the Pandas DataFrame wrapped by the class.
 
     Raises:
         AttributeError: If required columns are missing from the input DataFrame.
     """
 
-    def __init__(self, df: pl.DataFrame) -> None:
+    def __init__(self, df: pd.DataFrame) -> None:
         self._df = df
 
         if "time" not in self._df.columns:
@@ -251,7 +231,7 @@ class Vr2pNamespace:
         """
         return movement_speed(self._df, window_size=window_size, ignore_threshold=ignore_threshold)
 
-    def ranged_values(self, df: pl.DataFrame, fields: list[str]) -> pl.DataFrame:
+    def ranged_values(self, df: pd.DataFrame, fields: list[str]) -> pd.DataFrame:
         """Adds columns from the input DataFrame to the wrapped DataFrame, based on their timestamps.
 
         This method is used to iteratively merge information stored in various DataFrames into the DataFrame wrapped
@@ -265,7 +245,7 @@ class Vr2pNamespace:
             fields: A list of column names from `df` to merge into the namespace's DataFrame.
 
         Returns:
-            A Polars DataFrame with the requested columns added and populated by matching timestamp ranges.
+            A Pandas DataFrame with the requested columns added and populated by matching timestamp ranges.
         """
         return add_ranged_timestamp_values(self._df, df, fields)
 
@@ -274,45 +254,45 @@ class Vr2pNamespace:
 class FieldTypes:
     """Registry of field data types used in GIMBL data processing.
 
-    This class provides a centralized mapping of field names to their corresponding polars data types to ensure
+    This class provides a centralized mapping of field names to their corresponding Pandas data types to ensure
     consistent data type conversion when loading or processing data.
 
     Attributes:
-        fields: A Dictionary mapping field names to polars dtypes.
+        fields: A Dictionary mapping field names to Pandas dtypes.
     """
 
-    fields: dict[str, pl.DataType] = field(
+    fields: dict[str, str] = field(
         default_factory=lambda: {
             # Metadata fields
-            "data.name": pl.Categorical,
-            "data.isActive": pl.Boolean,
-            "data.time": pl.Categorical,
-            "data.project": pl.Categorical,
-            "data.scene": pl.Categorical,
-            "data.source": pl.Categorical,
-            "data.loopPath": pl.Boolean,
-            "data.environment": pl.Categorical,
+            "data.name": "category",
+            "data.isActive": "bool",
+            "data.time": "category",
+            "data.project": "category",
+            "data.scene": "category",
+            "data.source": "category",
+            "data.loopPath": "bool",
+            "data.environment": "category",
             # Message fields
-            "msg": pl.Categorical,
-            "data.msg": pl.Categorical,
-            "data.msg.event": pl.Categorical,
-            "data.msg.id": pl.Categorical,
-            "data.msg.action": pl.Categorical,
-            "data.msg.type": pl.Categorical,
-            "data.msg.withSound": pl.Boolean,
-            "data.msg.frequency": pl.Categorical,
+            "msg": "category",
+            "data.msg": "category",
+            "data.msg.event": "category",
+            "data.msg.id": "category",
+            "data.msg.action": "category",
+            "data.msg.type": "category",
+            "data.msg.withSound": "bool",
+            "data.msg.frequency": "category",
             # Path and navigation fields
-            "data.pathName": pl.Categorical,
-            "data.duration": pl.Categorical,
-            "data.distance": pl.Int64,
+            "data.pathName": "category",
+            "data.duration": "category",
+            "data.distance": "int",
             # Session state fields
-            "data.level": pl.Int64,
-            "data.epoch": pl.Int64,
-            "data.lap": pl.Int64,
-            "data.success": pl.Boolean,
+            "data.level": "int",
+            "data.epoch": "int",
+            "data.lap": "int",
+            "data.success": "bool",
             # Control fields
-            "data.gain.forward": pl.Categorical,
-            "data.gain.backward": pl.Categorical,
-            "data.inputSmooth": pl.Categorical,
+            "data.gain.forward": "category",
+            "data.gain.backward": "category",
+            "data.inputSmooth": "category",
         }
     )
