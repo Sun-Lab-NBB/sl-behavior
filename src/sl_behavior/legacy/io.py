@@ -230,7 +230,8 @@ def extract_gimbl_data(session_data: SessionData) -> None:
     period_data = parse_period_info(logs_df)
     period_data.to_feather(os.path.join(output_directory, "period_data.feather"))
 
-    # Marks the session with the behavior.bin file. The existence of the marker file serves
+    # Marks the session with the behavior.bin file. The marker file is primarily used by other Sun lab libraries and
+    # pipelines to determine whet the session data has been successfully processed with the behavior parsing pipeline.
     session_data.processed_data.behavior_bin_path.touch(exist_ok=True)
 
     console.echo(f"Legacy GIMBL log file: Processed.", level=LogLevel.SUCCESS)
