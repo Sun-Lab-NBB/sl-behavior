@@ -82,7 +82,7 @@ def forward_fill_missing_frame_info(
 
     # If column subset is not provided, works with all available columns
     if not subset_columns:
-        subset_columns = frame_data.columns
+        subset_columns = frame_data.columns  # type: ignore
 
     # Prepares the data for processing all available frame x (unique) actor combinations
     num_frames = frames.shape[0]
@@ -232,7 +232,7 @@ def convert_reward_data(reward_df: pd.DataFrame) -> pd.DataFrame:
 
     # Renames the sound column to match the current Sun lab naming convention. The convention changed between the
     # original implementation of this function and the 1.0.0 release.
-    reward_df = reward_df.renamerename(columns={"sound_on": "tone_state"})
+    reward_df = reward_df.rename(columns={"sound_on": "tone_state"})
 
     return reward_df
 

@@ -28,7 +28,7 @@ class IdleData:
         sound: Stores data about auditory cues emitted during the idle states.
     """
 
-    sound: str | None = None
+    sound: str | None | pd.DataFrame = None
 
 
 @dataclass
@@ -40,7 +40,7 @@ class TimeData:
         frame: A Pandas DataFrame describing the state of the Virtual Reality task at each Mesoscope frame timestamp.
     """
 
-    time: NDArray[Any] | None = None
+    time: pd.DataFrame | None = None
     frame: pd.DataFrame | None = None
 
 
@@ -56,8 +56,8 @@ class ControllerData:
         frame: A Pandas DataFrame that captures the controller state at each Mesoscope frame.
     """
 
-    settings: dict[str, Any] | None = None
-    time: NDArray[Any] | None = None
+    settings: dict[str, Any] | None | pd.DataFrame = None
+    time: pd.DataFrame | None = None
     frame: pd.DataFrame | None = None
 
 
@@ -90,13 +90,13 @@ class GimblData:
     """
 
     time: NDArray[Any] | None = None
-    info: dict[str, Any] | None = None
+    info: dict[str, Any] | None | pd.DataFrame = None
     frames: pd.DataFrame | None = None
     position: TimeData = field(default_factory=TimeData)
     path: TimeData = field(default_factory=TimeData)
-    camera: dict[str, Any] | None = None
-    reward: dict[str, Any] | None = None
-    lick: dict[str, Any] | None = None
+    camera: dict[str, Any] | None | pd.DataFrame = None
+    reward: dict[str, Any] | None | pd.DataFrame = None
+    lick: dict[str, Any] | None | pd.DataFrame = None
     idle: IdleData = field(default_factory=IdleData)
     linear_controller: ControllerData = field(default_factory=ControllerData)
     spherical_controller: ControllerData = field(default_factory=ControllerData)
@@ -116,15 +116,15 @@ class GimblData:
         """
 
         # Filters the data for the requested path
-        ind = self.path.frame["path"] == path
+        ind = self.path.frame["path"] == path  # type: ignore
         # noinspection PyTypeChecker
         if sum(ind) == 0:
             message = f"Could not find path with name {path} inside the .path.frame attribute."
             console.error(message=message, error=NameError)
 
         # Gets position values for the target path
-        df = self.position.frame.loc[ind, ["x", "y", "z"]].copy()
-        df["path"] = self.path.frame.loc[ind, "position"]
+        df = self.position.frame.loc[ind, ["x", "y", "z"]].copy()  # type: ignore
+        df["path"] = self.path.frame.loc[ind, "position"]  # type: ignore
 
         # Sorts by path and removes duplicates based on rounded path values
         df = df.sort_values(by=["path"])
@@ -133,8 +133,7 @@ class GimblData:
 
         # Interpolates XYZ coordinates for each path position using B-spline interpolation
         tck, _ = splprep([df["x"], df["y"], df["z"]], u=df["path"], s=0.01)
-        # noinspection PyTypeChecker
-        xi, yi, zi = splev(values, tck)
+        xi, yi, zi = splev(x=values, tck=tck)  # type: ignore
 
         # Generates and returns the multidimensional NumPy array that stores interpolated XYZ coordinate values
         result = np.column_stack((xi, yi, zi))
@@ -158,14 +157,14 @@ class GimblData:
 
         # Extracts all path names
         fits = []
-        path_names = self.path.frame["path"].unique()
+        path_names = self.path.frame["path"].unique()  # type: ignore
 
         # Fits each available path to the input XYZ coordinates to determine which path most closely matches the given
         # set of coordinates
         for path_name in path_names:
-            ind = self.path.frame["path"] == path_name
-            df = self.position.frame.loc[ind, ["x", "y", "z"]]
-            df["path"] = self.path.frame.loc[ind, "position"]
+            ind = self.path.frame["path"] == path_name  # type: ignore
+            df = self.position.frame.loc[ind, ["x", "y", "z"]]  # type: ignore
+            df["path"] = self.path.frame.loc[ind, "position"]  # type: ignore
             df = df.sort_values(by=["path"])
             df["path_r"] = df["path"].round(0)
             df = df.drop_duplicates(subset="path_r")
@@ -174,14 +173,14 @@ class GimblData:
 
         # Determines the closest path for the processed collection of XYZ values based on the distance between the
         # fitted path and the 'ground' XYZ data
-        obs = self.position.frame.loc[:, ["x", "y", "z"]].to_numpy()
+        obs = self.position.frame.loc[:, ["x", "y", "z"]].to_numpy()  # type: ignore
         dist = cdist(values, obs)
 
         # Interpolates path names and positions for each set of XYZ coordinates (for each position)
         result = []
         for i, value in enumerate(values):
             closest_idx = np.argmin(dist[i, :])
-            path_val = self.path.frame.loc[closest_idx, "path"].item()
+            path_val = self.path.frame.loc[closest_idx, "path"].item()  # type: ignore
             path_ind = np.argwhere(path_names == path_val)[0][0]
 
             # noinspection PyTypeChecker
@@ -218,7 +217,7 @@ class Vr2pNamespace:
             message = "Expected the input dataframe to contain the 'time' column, but the column is missing."
             console.error(message=message, error=AttributeError)
 
-    def rolling_speed(self, window_size: int, ignore_threshold: int = 50) -> np.ndarray:
+    def rolling_speed(self, window_size: int, ignore_threshold: int = 50) -> NDArray[Any]:
         """Calculates animal's movement speed during the session using a specific rolling time window.
 
         Args:

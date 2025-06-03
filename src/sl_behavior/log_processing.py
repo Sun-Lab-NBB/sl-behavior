@@ -149,13 +149,16 @@ def _parse_encoder_data(
     module_dataframe.write_ipc(file=output_directory.joinpath("encoder_data.feather"), compression="lz4")
 
 
-def _parse_ttl_data(extracted_module_data: ExtractedModuleData, output_directory: Path) -> None:
+def _parse_ttl_data(extracted_module_data: ExtractedModuleData, output_directory: Path, log_name: str) -> None:
     """Extracts and saves the data acquired by the TTLModule during runtime as a .feather file.
 
     Args:
         extracted_module_data: The ExtractedModuleData instance that stores the data logged by the module during
             runtime.
         output_directory: The path to the directory where to save the parsed data as a .feather file.
+        log_name: The unique name to use for the output .feather file. Since we use more than a single TTLModule
+            instance, it may be necessary to distinguish different TTL log files from each other by using unique file
+            names to store the parsed data.
     """
     log_data = extracted_module_data.data
 
@@ -211,7 +214,7 @@ def _parse_ttl_data(extracted_module_data: ExtractedModuleData, output_directory
     )
 
     # Saves the DataFrame to the output directory as a Feather file with lz4 compression
-    module_dataframe.write_ipc(file=output_directory.joinpath("frame_data.feather"), compression="lz4")
+    module_dataframe.write_ipc(file=output_directory.joinpath(f"{log_name}.feather"), compression="lz4")
 
 
 def _parse_break_data(
@@ -950,6 +953,7 @@ def _process_sensor_data(log_path: Path, output_directory: Path, hardware_state:
         _parse_ttl_data(
             extracted_module_data=log_data_tuple[data_indices[2]],
             output_directory=output_directory,
+            log_name="mesoscope_frame_data",
         )
 
 
@@ -1016,6 +1020,11 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 6) -> No
 
     # Should exist inside the raw data directory
     hardware_configuration_path = session_data.raw_data.hardware_state_path
+
+    # Removes the behavior processing marker file if it exists. This file is used to mark sessions whose behavior data
+    # has been successfully processed by this library. This is primarily used when running data processing on remote
+    # compute server(s).
+    session_data.processed_data.behavior_bin_path.unlink(missing_ok=True)
 
     # Finds all .npz log files inside the input log file directory. Assumes there are no uncompressed log files.
     compressed_files: list[Path] = [file for file in log_directory.glob("*.npz")]
@@ -1110,8 +1119,8 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 6) -> No
         # Displays a progress bar to track the parsing status if the function is called in the verbose mode.
         with tqdm(
             total=len(futures),
-            desc=f"Parsing log sources",
-            unit="source",
+            desc=f"Processing log files",
+            unit="file",
         ) as pbar:
             for future in as_completed(futures):
                 # Propagates any exceptions from the transfers

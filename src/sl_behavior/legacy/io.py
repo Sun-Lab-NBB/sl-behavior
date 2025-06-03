@@ -1,14 +1,17 @@
-from __future__ import annotations
+"""This module provides the high-level GIMBL .JSON log parsing logic. The logic from this module read the .JSOn file
+and parses it as multiple .feather files expected by the modern Sun lab data processing pipelines."""
 
 import os
 from typing import Mapping, Sequence
+from sl_shared_assets import SessionData
 
 import numpy as np
 import pandas as pd
+from ataraxis_base_utilities import console, LogLevel
 
 from .parse import (
+    parse_gimbl_log,
     parse_trial_info,
-    process_gimbl_df,
     parse_period_info,
     parse_session_events,
 )
@@ -33,38 +36,44 @@ def _extract_cue_changes(
     position_col: str = "position",
     time_col: str = "time_us",
 ) -> pd.DataFrame:
-    """Return a compact table with one row per cue transition.
+    """Generates that stores the sequence of wall cues experienced by the animal while running the session alongside
+    the timestamp for each wall cue transition.
 
     Args:
-        path: DataFrame containing at least ``position_col`` and ``time_col``.
-              Typically this is ``data.path.time`` from your pipeline.
-        cue_definitions: Ordered list/tuple of mappings with keys
-            ``name``, ``position_start`` and ``position_end``.
-            The default corresponds to the standard 2‑AC track.
-        position_col: Column in *path* that stores linearised position values.
-        time_col: Column in *path* that stores monotonic time stamps (µs).
+        path: The Pandas DataFrame that stores the parsed session path information and contains at least 'position_col'
+            and 'time_col'.
+        cue_definitions: The ordered list or tuple of mappings with keys 'name', 'position_start', and 'position_end'.
+            The default value of this argument corresponds to the standard 2‑AC track used in the Tyche project.
+        position_col: The name of the column in 'path' that stores the linearized position values.
+        time_col: The name of the column in 'path' that stores monotonic time stamps (in µs since UTC epoch onset).
 
     Returns:
-        DataFrame with columns
-        ``time_us`` – time at which the cue became active
-        ``vr_cue`` – categorical integer code (stable across calls)
-        ``cue_name`` – human‑readable cue identifier
+        The Pandas DataFrame with columns 'time_us', 'vr_cue' and 'cue_name'.
     """
-    # ---------------------------- validation --------------------------------- #
+    # Ensures that the input path data contains the required information
     missing = {c for c in (position_col, time_col) if c not in path.columns}
     if missing:
-        raise KeyError(f"`path` is missing required column(s): {missing}")
+        message = (
+            f"Unbale to extract the wall cue changes that correspond to the animal's motion along the linear track. "
+            f"The Pandas DataFrame passed as the 'path' argument is missing required column(s): {missing}."
+        )
+        console.error(message=message, error=KeyError)
 
-    # ----------------------------- cue table --------------------------------- #
+    # Reads the input cue table and ensures it contains the required information.
     cues_df = pd.DataFrame(cue_definitions, copy=False)
     if not {"name", "position_start", "position_end"}.issubset(cues_df.columns):
-        msg = "`cue_definitions` must supply 'name', 'position_start' and 'position_end' keys."
-        raise ValueError(msg)
+        message = (
+            "Unbale to extract the wall cue changes that correspond to the animal's motion along the linear track. "
+            "The dictionary passed as the 'cue_definitions' argument must supply the 'name', 'position_start' and "
+            "'position_end' keys, but at least one expected key is missing."
+        )
+        console.error(message=message, error=ValueError)
 
-    # Stable integer labels for fast look‑ups
+    # Defines stable integer labels for faster look‑ups
     cues_df["vr_cue"] = cues_df["name"].astype("category").cat.codes
 
-    # ------------------------------ binning ---------------------------------- #
+    # Bins the distance traveled by the animal to generate the sequence of wall cues observed by the animal at each
+    # distance point.
     positions = path[position_col].to_numpy(copy=False)
     bin_edges = cues_df["position_start"].to_numpy(copy=False)
     cue_bins = np.digitize(positions, bin_edges, right=False)
@@ -73,7 +82,7 @@ def _extract_cue_changes(
     change_idx = np.where(bin_changes != 0)[0] + 1
     change_idx = np.insert(change_idx, 0, 0)
 
-    # -------------------------- assemble result ----------------------------- #
+    # Assembles the output cue DataFrame.
     return pd.DataFrame(
         {
             "time_us": path[time_col].iloc[change_idx].to_numpy(),
@@ -83,34 +92,60 @@ def _extract_cue_changes(
     ).reset_index(drop=True)
 
 
-def export_gimbl_data(logs_df, out_dir: str = "."):
-    """Exports each table from 'data' (returned by parse_gimbl_log) to individual Feather files.
+def extract_gimbl_data(session_data: SessionData) -> None:
+    """Reads and exports the data stored in the GIMBL .JSOn file to individual .feather files.
+
+    This is a service function designed to process the legacy data from the Tyche dataset. It should not be used with
+    modern Sun lab data and instead is purpose-built for reanalyzing the legacy Tyche dataset. Do not call this function
+    unless you know what you are doing.
 
     Args:
-        logs_df (GimblData): Parsed GimblData object containing various DataFrames.
-        out_dir (str): Destination folder for Feather files.
-
-    Example:
-        # >>> from sl_behavior.legacy.parse import parse_gimbl_log
-        # >>> df, data = parse_gimbl_log("path/to/log.json")
-        # >>> export_gimbl_data(df, out_dir='./Results')
+        session_data: The SessionData instance for the session whose legacy log data needs to be processed.
     """
-    _, data = process_gimbl_df(logs_df)
 
-    os.makedirs(out_dir, exist_ok=True)
+    # Resolves input and output directory paths using SessionData
+    input_directory = session_data.raw_data.behavior_data_path
+    output_directory = session_data.processed_data.behavior_data_path
 
+    console.echo(f"Processing legacy GIMBL log file...", level=LogLevel.INFO)
+
+    # Removes the behavior processing marker file if it exists. This file is used to mark sessions whose behavior data
+    # has been successfully processed by this library. This is primarily used when running data processing on remote
+    # compute server(s).
+    session_data.processed_data.behavior_bin_path.unlink(missing_ok=True)
+
+    # Valid legacy session should contain a single .json file in the raw 'behavior_data' subdirectory. Otherwise,
+    # raises an error.
+    json_files = [file for file in input_directory.glob("*.json")]
+    if len(json_files) != 1:
+        message = (
+            f"Unable to extract the legacy behavior data from the GIMBL .JSOn log file. Expected a single .json file "
+            f"in the raw 'behavior_data' subdirectory of the processed session, but instead encountered "
+            f"{len(json_files)} files."
+        )
+        console.error(message=message, error=FileNotFoundError)
+        raise FileNotFoundError(message)  # Fallback to appease mypy
+    else:
+        log_file_path = json_files[0]
+
+    # Loads and parses the log data into a GimblData object and a DataFrame.
+    logs_df, data = parse_gimbl_log(log_file_path)
+
+    # Mesoscope frame timestamp data.
     if hasattr(data, "frames") and isinstance(data.frames, pd.DataFrame):
-        data.frames.to_feather(os.path.join(out_dir, "frames.feather"))
+        data.frames.to_feather(os.path.join(output_directory, "mesoscope_frame_data.feather"))
 
+    # Linear position data
     if hasattr(data, "position"):
         if hasattr(data.position, "time") and isinstance(data.position.time, pd.DataFrame):
-            data.position.time.to_feather(os.path.join(out_dir, "position_time.feather"))
+            data.position.time.to_feather(os.path.join(output_directory, "position_time.feather"))
         if hasattr(data.position, "frame") and isinstance(data.position.frame, pd.DataFrame):
-            data.position.frame.to_feather(os.path.join(out_dir, "position_frame_avg.feather"))
+            data.position.frame.to_feather(os.path.join(output_directory, "position_frame_avg.feather"))
 
+    # Movement (Encoder) data. Includes some additional fields unique to how Tyche project logged the data.
     if hasattr(data, "path"):
         if hasattr(data.path, "time") and isinstance(data.path.time, pd.DataFrame):
-            data.path.time.to_feather(os.path.join(out_dir, "path_time.feather"))
+            data.path.time.to_feather(os.path.join(output_directory, "path_time.feather"))
 
             # encoder data
             all_pos = data.path.time.position.to_numpy()
@@ -126,51 +161,76 @@ def export_gimbl_data(logs_df, out_dir: str = "."):
                 }
             )
 
-            encoder_data.to_feather(os.path.join(out_dir, "encoder_data.feather"))
+            encoder_data.to_feather(os.path.join(output_directory, "encoder_data.feather"))
 
             cue_data = _extract_cue_changes(data.path.time, cue_definitions=DEFAULT_CUE_DEFINITIONS)
-            cue_data.to_feather(os.path.join(out_dir, "cue_data.feather"))
+            cue_data.to_feather(os.path.join(output_directory, "cue_data.feather"))
 
         if hasattr(data.path, "frame") and isinstance(data.path.frame, pd.DataFrame):
-            data.path.frame.to_feather(os.path.join(out_dir, "path_frame_avg.feather"))
+            data.path.frame.to_feather(os.path.join(output_directory, "path_frame_avg.feather"))
 
+    # Camera frame data
     if hasattr(data, "camera") and isinstance(data.camera, pd.DataFrame):
-        data.camera.to_feather(os.path.join(out_dir, "camera.feather"))
+        data.camera.to_feather(os.path.join(output_directory, "face_camera_timestamps.feather"))
 
+    # Reward data
     if hasattr(data, "reward") and isinstance(data.reward, pd.DataFrame):
-        data.reward.to_feather(os.path.join(out_dir, "reward.feather"))
+        data.reward.to_feather(os.path.join(output_directory, "valve_data.feather"))
 
+    # Lick data
     if hasattr(data, "lick") and isinstance(data.lick, pd.DataFrame):
-        data.lick.to_feather(os.path.join(out_dir, "lick.feather"))
+        data.lick.to_feather(os.path.join(output_directory, "lick_data.feather"))
 
+    # Idle period data. Note, Idle periods are not teleport or darkness periods. Idle periods are voluntary and in
+    # early animals a 'punishment' sound was used to force the animal to continue running. The sound was deprecated
+    # early into the project.
     if hasattr(data, "idle") and hasattr(data.idle, "sound") and isinstance(data.idle.sound, pd.DataFrame):
-        data.idle.sound.to_feather(os.path.join(out_dir, "idle_sound.feather"))
+        data.idle.sound.to_feather(os.path.join(output_directory, "idle_sound.feather"))
 
+    # Parses linear position data
     if hasattr(data, "linear_controller"):
         if hasattr(data.linear_controller, "settings") and isinstance(data.linear_controller.settings, pd.DataFrame):
-            data.linear_controller.settings.to_feather(os.path.join(out_dir, "linear_controller_settings.feather"))
+            data.linear_controller.settings.to_feather(
+                os.path.join(output_directory, "linear_controller_settings.feather")
+            )
         if hasattr(data.linear_controller, "time") and isinstance(data.linear_controller.time, pd.DataFrame):
-            data.linear_controller.time.to_feather(os.path.join(out_dir, "linear_controller_time.feather"))
+            data.linear_controller.time.to_feather(os.path.join(output_directory, "linear_controller_time.feather"))
         if hasattr(data.linear_controller, "frame") and isinstance(data.linear_controller.frame, pd.DataFrame):
-            data.linear_controller.frame.to_feather(os.path.join(out_dir, "linear_controller_frame_avg.feather"))
+            data.linear_controller.frame.to_feather(
+                os.path.join(output_directory, "linear_controller_frame_avg.feather")
+            )
 
+    # Spherical controller data. It is highly likely that this section will never be used, as this code is only intended
+    # to parse the Tyche project data, which used the linear controller.
     if hasattr(data, "spherical_controller"):
         if hasattr(data, "spherical_controller_settings") and isinstance(
             data.spherical_controller_settings, pd.DataFrame
         ):
             data.spherical_controller_settings.to_feather(
-                os.path.join(out_dir, "spherical_controller_settings.feather")
+                os.path.join(output_directory, "spherical_controller_settings.feather")
             )
         if hasattr(data.spherical_controller, "time") and isinstance(data.spherical_controller.time, pd.DataFrame):
-            data.spherical_controller.time.to_feather(os.path.join(out_dir, "spherical_controller_time.feather"))
+            data.spherical_controller.time.to_feather(
+                os.path.join(output_directory, "spherical_controller_time.feather")
+            )
         if hasattr(data.spherical_controller, "frame") and isinstance(data.spherical_controller.frame, pd.DataFrame):
-            data.spherical_controller.frame.to_feather(os.path.join(out_dir, "spherical_controller_frame_avg.feather"))
+            data.spherical_controller.frame.to_feather(
+                os.path.join(output_directory, "spherical_controller_frame_avg.feather")
+            )
 
+    # Trial information.
     trial_data = parse_trial_info(logs_df)
-    trial_data.to_feather(os.path.join(out_dir, "trial_data.feather"))
+    trial_data.to_feather(os.path.join(output_directory, "trial_data.feather"))
 
+    # Session information.
     filtered_events = parse_session_events(logs_df)
-    filtered_events.to_feather(os.path.join(out_dir, "session_data.feather"))
+    filtered_events.to_feather(os.path.join(output_directory, "session_data.feather"))
 
+    # Experiment phase / state information.
     period_data = parse_period_info(logs_df)
-    period_data.to_feather(os.path.join(out_dir, "period_data.feather"))
+    period_data.to_feather(os.path.join(output_directory, "period_data.feather"))
+
+    # Marks the session with the behavior.bin file. The existence of the marker file serves
+    session_data.processed_data.behavior_bin_path.touch(exist_ok=True)
+
+    console.echo(f"Legacy GIMBL log file: Processed.", level=LogLevel.SUCCESS)
