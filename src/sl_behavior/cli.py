@@ -26,7 +26,8 @@ from .log_processing import extract_log_data
         "The absolute path to the directory where processed data from all projects is stored on the machine that runs "
         "this command. This argument is used when calling the CLI on the BioHPC server, which uses different data "
         "volumes for raw and processed data. Note, the input path must point to the root directory, as it will be "
-        "automatically modified to include the project name, the animal id, and the session ID."
+        "automatically modified to include the project name, the animal id, and the session ID. Do not provide this "
+        "argument if processed and raw dat roots are the same."
     ),
 )
 @click.option(
@@ -40,10 +41,29 @@ from .log_processing import extract_log_data
         "not provide this flag unless you are working with 'ascended' Tyche data."
     ),
 )
-def extract_behavior_data(session_path: str, processed_data_root: Path, legacy: bool) -> None:
+@click.option(
+    "-c",
+    "--create_processed_directories",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help=(
+        "Determines whether to create the processed data hierarchy. Typically, this flag only needs to be enabled when "
+        "this command is called outside of the typical data processing pipeline used in the Sun lab. Usually, "
+        "processed data directories are created at an earlier stage of data processing, if it is carried out on the "
+        "remote compute server."
+    ),
+)
+def extract_behavior_data(
+    session_path: str, processed_data_root: Path, legacy: bool, create_processed_directories: bool
+) -> None:
     # Instantiates the SessionData instance for the processed session
     session = Path(session_path)
-    session_data = SessionData.load(session_path=session, processed_data_root=processed_data_root)
+    session_data = SessionData.load(
+        session_path=session,
+        processed_data_root=processed_data_root,
+        make_processed_data_directory=create_processed_directories,
+    )
 
     # If the processed session is a modern Sun lab session, extracts session's behavior data from multiple .npz log
     # files
