@@ -2,9 +2,12 @@ from typing import Any
 from pathlib import Path
 
 import numpy as np
+from _typeshed import Incomplete
 from numpy.typing import NDArray as NDArray
 from sl_shared_assets import SessionData, MesoscopeHardwareState
 from ataraxis_communication_interface import ExtractedModuleData
+
+_supported_acquisition_systems: Incomplete
 
 def _interpolate_data(
     timestamps: NDArray[np.uint64],
