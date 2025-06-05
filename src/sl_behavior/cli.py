@@ -3,10 +3,10 @@
 from pathlib import Path
 
 import click
-from ataraxis_base_utilities import LogLevel, console, ensure_directory_exists
-from .log_processing import extract_log_data
-from .legacy import extract_gimbl_data
 from sl_shared_assets import SessionData
+
+from .legacy import extract_gimbl_data
+from .log_processing import extract_log_data
 
 
 @click.command()
@@ -15,7 +15,7 @@ from sl_shared_assets import SessionData
     "--session_path",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
     required=True,
-    help="The absolute path to the session whose raw data needs to be verified for potential corruption.",
+    help="The absolute path to the session whose raw behavior log data needs to be extracted into .feather files.",
 )
 @click.option(
     "-pdr",
@@ -26,8 +26,7 @@ from sl_shared_assets import SessionData
         "The absolute path to the directory where processed data from all projects is stored on the machine that runs "
         "this command. This argument is used when calling the CLI on the BioHPC server, which uses different data "
         "volumes for raw and processed data. Note, the input path must point to the root directory, as it will be "
-        "automatically modified to include the project name, the animal id, and the session ID. This argument is only "
-        "used if 'create_processed_directories' flag is True."
+        "automatically modified to include the project name, the animal id, and the session ID."
     ),
 )
 @click.option(
@@ -37,13 +36,11 @@ from sl_shared_assets import SessionData
     show_default=True,
     default=False,
     help=(
-        "Determines whether to created the processed data hierarchy. This flag should be disabled for most runtimes. "
-        "Primarily, it is used by lab acquisition system code to generate processed data directories on the remote "
-        "compute servers as part of the data preprocessing pipeline."
+        "Determines whether the processed session is a modern Sun lab session or a 'legacy' Tyche project session. Do "
+        "not provide this flag unless you are working with 'ascended' Tyche data."
     ),
 )
 def extract_behavior_data(session_path: str, processed_data_root: Path, legacy: bool) -> None:
-
     # Instantiates the SessionData instance for the processed session
     session = Path(session_path)
     session_data = SessionData.load(session_path=session, processed_data_root=processed_data_root)
@@ -55,4 +52,3 @@ def extract_behavior_data(session_path: str, processed_data_root: Path, legacy: 
     else:
         # Otherwise, extracts session's behavior data from the single GIMBL.json log file
         extract_gimbl_data(session_data=session_data)
-

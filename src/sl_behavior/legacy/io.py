@@ -3,11 +3,11 @@ and parses it as multiple .feather files expected by the modern Sun lab data pro
 
 import os
 from typing import Mapping, Sequence
-from sl_shared_assets import SessionData
 
 import numpy as np
 import pandas as pd
-from ataraxis_base_utilities import console, LogLevel
+from sl_shared_assets import SessionData
+from ataraxis_base_utilities import LogLevel, console
 
 from .parse import (
     parse_gimbl_log,

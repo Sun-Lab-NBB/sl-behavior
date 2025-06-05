@@ -9,7 +9,7 @@ build-backend = "hatchling.build"
 [project]
 name = "sl-behavior"
 version = "1.0.0"
-description = "A Python library that provides tools for processing behavior data acquired in the Sun (NeuroAI) lab."
+description = "Provides tools for processing non-visual behavior data acquired in the Sun (NeuroAI) lab."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11, <3.13"  # Until AXVS and DLC support 3.12+
@@ -50,6 +50,7 @@ dependencies = [
     "ataraxis-video-system>=1.1.0,<2",
     "tqdm>=4,<5",
     "pandas>=2,<3",
+    "polars>=1,<2",
     "pyarrow>=20,<21",
     "sl-shared-assets>=1,<2",
 ]
@@ -71,6 +72,7 @@ condarun = [
     "tqdm>=4,<5",
     "click>=8,<9",
     "pandas>=2,<3",
+    "polars>=1,<2",
     "pyarrow>=20,<21",
 ]
 
@@ -126,8 +128,9 @@ dev = [
     "sl-behavior[noconda]"
 ]
 
-# Future support for CLI interface(s) can be realizied through this section.
+# Exports CLIs for processing behavior data
 [project.scripts]
+sl-process-behavior = "sl_behavior.cli:extract_behavior_data"
 
 # Specifies files that should not be included in the source-code distribution but are also not part of gitignore.
 [tool.hatch.build.targets.sdist]
