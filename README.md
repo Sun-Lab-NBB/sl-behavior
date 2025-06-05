@@ -30,7 +30,7 @@ ___
 - [Versioning](#versioning)
 - [Authors](#authors)
 - [License](#license)
-- [Acknowledgements](#Acknowledgments)
+- [Acknowledgements](#acknowledgments)
 ---
 
 ## Dependencies
