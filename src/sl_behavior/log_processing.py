@@ -12,7 +12,7 @@ import numpy as np
 import polars as pl
 from numpy.typing import NDArray
 from numpy.lib.npyio import NpzFile
-from sl_shared_assets import SessionData, MesoscopeHardwareState
+from sl_shared_assets import SessionData, ProcessingTracker, MesoscopeHardwareState
 from ataraxis_video_system import extract_logged_video_system_data
 from ataraxis_base_utilities import console
 from ataraxis_communication_interface import ExtractedModuleData, extract_logged_hardware_module_data
@@ -1017,138 +1017,145 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 6) -> No
         parallel_workers: The number of CPU cores (workers) to use for processing the data in parallel. Note, this
             number should not exceed the number of available log files.
     """
-    # Resolves the paths to the specific directories used during processing
-    log_directory = session_data.raw_data.behavior_data_path
-    behavior_data_directory = session_data.processed_data.behavior_data_path
-    camera_data_directory = session_data.processed_data.camera_data_path
 
-    # Should exist inside the raw data directory
-    hardware_configuration_path = session_data.raw_data.hardware_state_path
+    # Instantiates the ProcessingTracker instance for behavior log processing and configures the underlying tracker file
+    # to indicate that the processing is ongoing. Note, this automatically invalidates any previous processing runtimes.
+    tracker = ProcessingTracker(file_path=session_data.processed_data.behavior_processing_tracker_path)
+    tracker.start()
 
-    if session_data.acquisition_system not in _supported_acquisition_systems:
-        message = (
-            f"Unable to process behavior data for session '{session_data.session_name}' of "
-            f"animal {session_data.animal_id} and project {session_data.project_name}. The input session was acquired"
-            f"with an unsupported acquisition system: {session_data.animal_id}. Currently, only sessions acquired "
-            f"using the following acquisition systems are supported: {', '.join(_supported_acquisition_systems)}."
+    try:
+        # Resolves the paths to the specific directories used during processing
+        log_directory = session_data.raw_data.behavior_data_path
+        behavior_data_directory = session_data.processed_data.behavior_data_path
+        camera_data_directory = session_data.processed_data.camera_data_path
+
+        # Should exist inside the raw data directory
+        hardware_configuration_path = session_data.raw_data.hardware_state_path
+
+        if session_data.acquisition_system not in _supported_acquisition_systems:
+            message = (
+                f"Unable to process behavior data for session '{session_data.session_name}' of "
+                f"animal {session_data.animal_id} and project {session_data.project_name}. The input session was "
+                f"acquired with an unsupported acquisition system: {session_data.animal_id}. Currently, only sessions "
+                f"acquired using the following acquisition systems are supported: "
+                f"{', '.join(_supported_acquisition_systems)}."
+            )
+            console.error(message=message, error=ValueError)
+
+        # Finds all .npz log files inside the input log file directory. Assumes there are no uncompressed log files.
+        compressed_files: list[Path] = [file for file in log_directory.glob("*.npz")]
+
+        # Loads the input MesoscopeHardwareState file to read the hardware parameters necessary to parse the data
+        hardware_configuration: MesoscopeHardwareState = MesoscopeHardwareState.from_yaml(  # type: ignore
+            file_path=hardware_configuration_path,
         )
-        console.error(message=message, error=ValueError)
 
-    # Removes the behavior processing marker file if it exists. This file is used to mark sessions whose behavior data
-    # has been successfully processed by this library. This is primarily used when running data processing on remote
-    # compute server(s).
-    session_data.processed_data.behavior_bin_path.unlink(missing_ok=True)
+        # If there are no compressed log files to process, returns immediately
+        if len(compressed_files) == 0:
+            return
 
-    # Finds all .npz log files inside the input log file directory. Assumes there are no uncompressed log files.
-    compressed_files: list[Path] = [file for file in log_directory.glob("*.npz")]
-
-    # Loads the input MesoscopeHardwareState file to read the hardware parameters necessary to parse the data
-    hardware_configuration: MesoscopeHardwareState = MesoscopeHardwareState.from_yaml(  # type: ignore
-        file_path=hardware_configuration_path,
-    )
-
-    # If there are no compressed log files to process, returns immediately
-    if len(compressed_files) == 0:
-        return
-
-    # Iterates over all compressed log files and processes them in-parallel
-    with ProcessPoolExecutor(max_workers=parallel_workers) as executor:
-        futures = set()
-        for file in compressed_files:
-            if session_data.acquisition_system == "mesoscope-vr":
-                # MesoscopeExperiment log file
-                if file.stem == "1_log" and hardware_configuration.cue_map is not None:
-                    futures.add(
-                        executor.submit(
-                            _process_experiment_data,
-                            file,
-                            behavior_data_directory,
-                            hardware_configuration.cue_map,
+        # Iterates over all compressed log files and processes them in-parallel
+        with ProcessPoolExecutor(max_workers=parallel_workers) as executor:
+            futures = set()
+            for file in compressed_files:
+                if session_data.acquisition_system == "mesoscope-vr":
+                    # MesoscopeExperiment log file
+                    if file.stem == "1_log" and hardware_configuration.cue_map is not None:
+                        futures.add(
+                            executor.submit(
+                                _process_experiment_data,
+                                file,
+                                behavior_data_directory,
+                                hardware_configuration.cue_map,
+                            )
                         )
-                    )
 
-                # Face Camera timestamps
-                if file.stem == "51_log":
-                    futures.add(
-                        executor.submit(
-                            _process_camera_timestamps,
-                            file,
-                            camera_data_directory.joinpath("face_camera_timestamps.feather"),
+                    # Face Camera timestamps
+                    if file.stem == "51_log":
+                        futures.add(
+                            executor.submit(
+                                _process_camera_timestamps,
+                                file,
+                                camera_data_directory.joinpath("face_camera_timestamps.feather"),
+                            )
                         )
-                    )
 
-                # Left Camera timestamps
-                if file.stem == "62_log":
-                    futures.add(
-                        executor.submit(
-                            _process_camera_timestamps,
-                            file,
-                            camera_data_directory.joinpath("left_camera_timestamps.feather"),
+                    # Left Camera timestamps
+                    if file.stem == "62_log":
+                        futures.add(
+                            executor.submit(
+                                _process_camera_timestamps,
+                                file,
+                                camera_data_directory.joinpath("left_camera_timestamps.feather"),
+                            )
                         )
-                    )
 
-                # Right Camera timestamps
-                if file.stem == "73_log":
-                    futures.add(
-                        executor.submit(
-                            _process_camera_timestamps,
-                            file,
-                            camera_data_directory.joinpath("right_camera_timestamps.feather"),
+                    # Right Camera timestamps
+                    if file.stem == "73_log":
+                        futures.add(
+                            executor.submit(
+                                _process_camera_timestamps,
+                                file,
+                                camera_data_directory.joinpath("right_camera_timestamps.feather"),
+                            )
                         )
-                    )
 
-                # Actor AMC module data
-                if file.stem == "101_log":
-                    futures.add(
-                        executor.submit(
-                            _process_actor_data,
-                            file,
-                            behavior_data_directory,
-                            hardware_configuration,
+                    # Actor AMC module data
+                    if file.stem == "101_log":
+                        futures.add(
+                            executor.submit(
+                                _process_actor_data,
+                                file,
+                                behavior_data_directory,
+                                hardware_configuration,
+                            )
                         )
-                    )
 
-                # Sensor AMC module data
-                if file.stem == "152_log":
-                    futures.add(
-                        executor.submit(
-                            _process_sensor_data,
-                            file,
-                            behavior_data_directory,
-                            hardware_configuration,
+                    # Sensor AMC module data
+                    if file.stem == "152_log":
+                        futures.add(
+                            executor.submit(
+                                _process_sensor_data,
+                                file,
+                                behavior_data_directory,
+                                hardware_configuration,
+                            )
                         )
-                    )
 
-                # Encoder AMC module data
-                if file.stem == "203_log":
-                    futures.add(
-                        executor.submit(
-                            _process_encoder_data,
-                            file,
-                            behavior_data_directory,
-                            hardware_configuration,
+                    # Encoder AMC module data
+                    if file.stem == "203_log":
+                        futures.add(
+                            executor.submit(
+                                _process_encoder_data,
+                                file,
+                                behavior_data_directory,
+                                hardware_configuration,
+                            )
                         )
+                else:
+                    message = (
+                        f"Behavior data processing logic for the acquisition system {session_data.acquisition_system} "
+                        f"is not implemented. Unable to process the session {session_data.session_name} of "
+                        f"animal {session_data.animal_id} and project {session_data.project_name}."
                     )
-            else:
-                message = (
-                    f"Behavior data processing logic for the acquisition system {session_data.acquisition_system} is "
-                    f"not implemented. Unable to process the session {session_data.session_name} of "
-                    f"animal {session_data.animal_id} and project {session_data.project_name}."
-                )
-                console.error(message=message, error=NotImplementedError)
+                    console.error(message=message, error=NotImplementedError)
 
-        # Displays a progress bar to track the parsing status if the function is called in the verbose mode.
-        with tqdm(
-            total=len(futures),
-            desc=f"Processing log files",
-            unit="file",
-        ) as pbar:
-            for future in as_completed(futures):
-                # Propagates any exceptions from the transfers
-                future.result()
-                pbar.update(1)
+            # Displays a progress bar to track the parsing status if the function is called in the verbose mode.
+            with tqdm(
+                total=len(futures),
+                desc=f"Processing log files",
+                unit="file",
+            ) as pbar:
+                for future in as_completed(futures):
+                    # Propagates any exceptions from the transfers
+                    future.result()
+                    pbar.update(1)
 
-        # Marks the session with the behavior.bin file. The marker file is primarily used by other Sun lab libraries and
-        # pipelines to determine whet the session data has been successfully processed with the behavior parsing
-        # pipeline.
-        session_data.processed_data.behavior_bin_path.touch(exist_ok=True)
+                # Configures the tracker to indicate that the processing runtime completed successfully
+                tracker.stop()
+    finally:
+        # If the code reaches this section while the tracker indicates that the processing is still running,
+        # this means that the verification runtime encountered an error. Configures the tracker to indicate that this
+        # runtime finished with an error to prevent deadlocking the runtime.
+        if tracker.is_running:
+            tracker.error()
