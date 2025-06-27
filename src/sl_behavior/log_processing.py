@@ -1036,8 +1036,8 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 6) -> No
             message = (
                 f"Unable to process behavior data for session '{session_data.session_name}' of "
                 f"animal {session_data.animal_id} and project {session_data.project_name}. The input session was "
-                f"acquired with an unsupported acquisition system: {session_data.animal_id}. Currently, only sessions "
-                f"acquired using the following acquisition systems are supported: "
+                f"acquired with an unsupported acquisition system: {session_data.acquisition_system}. Currently, "
+                f"only sessions acquired using the following acquisition systems are supported: "
                 f"{', '.join(_supported_acquisition_systems)}."
             )
             console.error(message=message, error=ValueError)
@@ -1155,7 +1155,7 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 6) -> No
                 tracker.stop()
     finally:
         # If the code reaches this section while the tracker indicates that the processing is still running,
-        # this means that the verification runtime encountered an error. Configures the tracker to indicate that this
-        # runtime finished with an error to prevent deadlocking the runtime.
+        # this means that the processing runtime encountered an error. Configures the tracker to indicate that this
+        # runtime finished with an error to prevent deadlocking future runtime calls.
         if tracker.is_running:
             tracker.error()
