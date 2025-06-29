@@ -27,7 +27,7 @@ from .log_processing import extract_log_data
         "this command. This argument is used when calling the CLI on the BioHPC server, which uses different data "
         "volumes for raw and processed data. Note, the input path must point to the root directory, as it will be "
         "automatically modified to include the project name, the animal id, and the session ID. Do not provide this "
-        "argument if processed and raw dat roots are the same."
+        "argument if processed and raw data roots are the same."
     ),
 )
 @click.option(
@@ -55,12 +55,11 @@ from .log_processing import extract_log_data
     ),
 )
 def extract_behavior_data(
-    session_path: str, processed_data_root: Path, legacy: bool, create_processed_directories: bool
+    session_path: Path, processed_data_root: Path, legacy: bool, create_processed_directories: bool
 ) -> None:
     # Instantiates the SessionData instance for the processed session
-    session = Path(session_path)
     session_data = SessionData.load(
-        session_path=session,
+        session_path=session_path,
         processed_data_root=processed_data_root,
         make_processed_data_directory=create_processed_directories,
     )
