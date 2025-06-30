@@ -494,7 +494,7 @@ def _parse_lick_data(
     module_dataframe = pl.DataFrame(
         {
             "time_us": timestamps,
-            "voltage_12bit_adc": voltages,
+            "voltage_12_bit_adc": voltages,
             "lick_state": licks,
         }
     )
