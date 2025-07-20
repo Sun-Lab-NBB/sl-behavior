@@ -52,7 +52,7 @@ dependencies = [
     "pandas>=2,<3",
     "polars>=1,<2",
     "pyarrow>=20,<21",
-    "sl-shared-assets==2.0.1",
+    "sl-shared-assets==3.0.0",
 ]
 
 [project.urls]

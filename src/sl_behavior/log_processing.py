@@ -9,6 +9,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from tqdm import tqdm
 import numpy as np
+from numba import njit  # type: ignore
 import polars as pl
 from numpy.typing import NDArray
 from numpy.lib.npyio import NpzFile
@@ -19,6 +20,196 @@ from ataraxis_communication_interface import ExtractedModuleData, extract_logged
 
 # Stores acquisition systems supported by this library.
 _supported_acquisition_systems = {"mesoscope-vr"}
+
+
+def prepare_motif_data(
+        self, trial_motifs: list[NDArray[np.uint8]], trial_distances: list[float]
+) -> tuple[NDArray[np.uint8], NDArray[np.int32], NDArray[np.int32], NDArray[np.int32], NDArray[np.float32]]:
+    """Prepares and caches the flattened motif data for faster cue sequence-to-trial decomposition (conversion).
+
+    Args:
+        trial_motifs: A list of trial motifs (wall cue sequences) in the format of numpy arrays.
+        trial_distances: A list of trial distances in centimeters.
+
+    Returns:
+        A tuple containing five elements. The first element is a flattened array of all motifs. The second
+        element is an array that stores the starting indices of each motif in the flat array. The third element is
+        an array that stores the length of each motif. The fourth element is an array that stores the original
+        indices of motifs before sorting. The fifth element is an array of trial distances in centimeters.
+    """
+    # Sorts motifs by length (longest first)
+    motif_data: list[tuple[int, NDArray[np.uint8], int]] = [
+        (i, motif, len(motif)) for i, motif in enumerate(trial_motifs)
+    ]
+    motif_data.sort(key=lambda x: x[2], reverse=True)
+
+    # Calculates total size needed to represent all motifs in an array.
+    total_size: int = sum(len(motif) for motif in trial_motifs)
+    num_motifs: int = len(trial_motifs)
+
+    # Creates arrays with specified dtypes.
+    motifs_flat: NDArray[np.uint8] = np.zeros(total_size, dtype=np.uint8)
+    motif_starts: NDArray[np.int32] = np.zeros(num_motifs, dtype=np.int32)
+    motif_lengths: NDArray[np.int32] = np.zeros(num_motifs, dtype=np.int32)
+    motif_indices: NDArray[np.int32] = np.zeros(num_motifs, dtype=np.int32)
+
+    # Fills the arrays
+    current_pos: int = 0
+    for i, (orig_idx, motif, length) in enumerate(motif_data):
+        # Ensures motifs are stored as uint8
+        motif_uint8 = motif.astype(np.uint8) if motif.dtype != np.uint8 else motif
+        motifs_flat[current_pos: current_pos + length] = motif_uint8
+        motif_starts[i] = current_pos
+        motif_lengths[i] = length
+        motif_indices[i] = orig_idx
+        current_pos += length
+
+    # Converts distances to float32 type
+    distances_array: NDArray[np.float32] = np.array(trial_distances, dtype=np.float32)
+
+    # Caches the results
+    self._cached_motifs = [motif.copy() for motif in trial_motifs]
+    self._cached_flat_data = (motifs_flat, motif_starts, motif_lengths, motif_indices)
+    self._cached_distances = distances_array
+
+    # noinspection PyTypeChecker
+    return self._cached_flat_data + (distances_array,)
+
+
+def _decompose_cue_sequence_into_trials(self) -> None:
+    """Decomposes the Virtual Reality task wall cue sequence into a sequence of trials.
+
+    Uses a greedy longest-match approach to identify trial motifs in the cue sequence and maps them to their trial
+    distances and water reward sizes based on the experiment_configuration file data. This transformation allows
+    the runtime control logic to keep track of the animal's performance and determine what rewards to deliver to the
+    animal when it performs well.
+
+    Raises:
+        RuntimeError: If the method is not able to fully decompose the experiment cue sequence into a set of trial
+            lengths.
+    """
+    # Mostly a fallback to appease mypy, this method should not be called for non-experiment runtimes.
+    if self._experiment_configuration is None:
+        return
+
+    # Extracts the list of trial cue sequences supported by the managed experiment runtime.
+    trials: list[ExperimentTrial] = [trial for trial in self._experiment_configuration.trial_structures.values()]
+
+    # Extracts trial motif (cue sequences for each trial type) and their corresponding distances in cm.
+    trial_motifs: list[NDArray[np.uint8]] = [np.array(trial.cue_sequence, dtype=np.uint8) for trial in trials]
+    trial_distances: list[float] = [float(trial.trial_length_cm) for trial in trials]
+    trial_rewards: list[float] = [float(trial.trial_reward_size_ul) for trial in trials]
+
+    # Prepares the flattened motif data using the MotifDecomposer class.
+    motifs_flat, motif_starts, motif_lengths, motif_indices, distances_array = (
+        self._motif_decomposer.prepare_motif_data(trial_motifs, trial_distances)
+    )
+
+    # Estimates the maximum number of trials that can be theoretically extracted from the input cue sequence. This
+    # is primarily a safety feature designed to abort the decomposition process if it runs for too long.
+    min_motif_length = min(len(motif) for motif in trial_motifs)
+    max_trials = len(self._cue_sequence) // min_motif_length + 1
+
+    # CallS Numba-accelerated worker method to decompose the sequence.
+    trial_indices_array, trial_count = self._decompose_sequence_numba_flat(
+        self._cue_sequence, motifs_flat, motif_starts, motif_lengths, motif_indices, max_trials
+    )
+
+    # Checks for decomposition errors
+    if trial_count == -1:
+        # Finds the position where decomposition failed for the error message
+        sequence_pos = 0
+        trial_indices_list = trial_indices_array[:max_trials].tolist()
+
+        # Reconstructs the position by summing the lengths of successfully matched trials
+        for idx in trial_indices_list:
+            if idx == 0 and sequence_pos > 0:  # Assumes 0 is not a valid trial index after the first match
+                break
+            sequence_pos += len(trial_motifs[idx])
+
+        remaining_sequence = self._cue_sequence[sequence_pos: sequence_pos + 20]
+        message = (
+            f"Unable to decompose the VR wall cue sequence received from Unity into a sequence of trial "
+            f"distances. No trial motif (trial cue sequence) matched at overall sequence position "
+            f"{sequence_pos}. The next 20 cues that were not matches to any motif: {remaining_sequence.tolist()}"
+        )
+        console.error(message=message, error=RuntimeError)
+        return
+
+    # Uses the decomposed trial sequence to construct an array of cumulative distances and a tuple of reward sizes
+    # for each trial. The distances and rewards appear in their storage iterables in the same order as the animal
+    # would encounter trials during runtime.
+    trial_indices_list = trial_indices_array[:trial_count].tolist()
+    trial_distance_array: NDArray[np.float64] = np.array(
+        [distances_array[trial_type] for trial_type in trial_indices_list], dtype=np.float64
+    )
+    self._trial_distances = np.cumsum(trial_distance_array, dtype=np.float64)
+    self._trial_rewards = tuple([float(trial_rewards[trial_type]) for trial_type in trial_indices_list])
+
+
+@njit(cache=True)  # type: ignore
+def _decompose_sequence_numba_flat(
+        cue_sequence: NDArray[np.uint8],
+        motifs_flat: NDArray[np.uint8],
+        motif_starts: NDArray[np.int32],
+        motif_lengths: NDArray[np.int32],
+        motif_indices: NDArray[np.int32],
+        max_trials: int,
+) -> tuple[NDArray[np.int32], int]:
+    """Decomposes a long sequence of Virtual Reality (VR) wall cues into individual trial motifs.
+
+    This is a worker function used to speed up decomposition via numba-acceleration.
+
+    Args:
+        cue_sequence: The full cue sequence to decompose.
+        motifs_flat: All motifs concatenated into a single 1D array.
+        motif_starts: Starting index of each motif in motifs_flat.
+        motif_lengths: The length of each motif.
+        motif_indices: Original indices of motifs (before sorting).
+        max_trials: The maximum number of trials that can make up the cue sequence.
+
+    Returns:
+        A tuple of two elements. The first element stores the array of trial type-indices (the sequence of trial
+        type indices). The second element stores the total number of trials extracted from the cue sequence.
+    """
+    # Prepares runtime trackers
+    trial_indices = np.zeros(max_trials, dtype=np.int32)
+    trial_count = 0
+    sequence_pos = 0
+    sequence_length = len(cue_sequence)
+    num_motifs = len(motif_lengths)
+
+    # Decomposes the sequence into trial motifs using greedy matching. Longer motifs are matched over shorter ones.
+    # Pre-specifying the maximum number of trials serves as a safety feature to avoid processing errors.
+    while sequence_pos < sequence_length and trial_count < max_trials:
+        motif_found = False
+
+        for i in range(num_motifs):
+            motif_length = motif_lengths[i]
+
+            # If the current sequence position is within the bounds of the motif, checks if it matches the motif.
+            if sequence_pos + motif_length <= sequence_length:
+                # Gets motif start position from the flat array
+                motif_start = motif_starts[i]
+
+                # Checks if the motif matches the evaluated sequence.
+                match = True
+                for j in range(motif_length):
+                    if cue_sequence[sequence_pos + j] != motifs_flat[motif_start + j]:
+                        match = False
+                        break
+                # If the motif matches, records the trial type index and moves to the next sequence position.
+                if match:
+                    trial_indices[trial_count] = motif_indices[i]
+                    trial_count += 1
+                    sequence_pos += motif_length
+                    motif_found = True
+                    break
+        # If the function is not able to pair a part of the sequence with a motif, aborts with an error.
+        if not motif_found:
+            return trial_indices, -1
+
+    return trial_indices[:trial_count], trial_count
 
 
 def _interpolate_data(
@@ -704,7 +895,7 @@ def _process_experiment_data(log_path: Path, output_directory: Path, cue_map: di
         log_path: The path to the .npz archive containing the VR and experiment data to parse.
         output_directory: The path to the directory where to save the extracted data as .feather files.
         cue_map: The dictionary mapping cue IDs to their corresponding distances in centimeters. This argument is only
-            used when parsing the data acquired by the Mesoscope-VR data acquisition system.
+            used when parsing the data acquired by runtimes that use Virtual Reality.
     """
     # Loads the archive into RAM
     archive: NpzFile = np.load(file=log_path)
@@ -1004,7 +1195,7 @@ def _process_encoder_data(log_path: Path, output_directory: Path, hardware_state
         )
 
 
-def extract_log_data(session_data: SessionData, parallel_workers: int = 6) -> None:
+def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> None:
     """Reads the compressed .npz log files stored in the raw_data directory of the target session and extracts all
     relevant behavior data stored in these files into the processed_data directory.
 
@@ -1059,8 +1250,10 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 6) -> No
             futures = set()
             for file in compressed_files:
                 if session_data.acquisition_system == "mesoscope-vr":
-                    # MesoscopeExperiment log file
-                    if file.stem == "1_log" and hardware_configuration.cue_map is not None:
+
+                    # Acquisition System log file. Currently, all valid runtimes generate log data, so this file is
+                    # always parsed
+                    if file.stem == "1_log":
                         futures.add(
                             executor.submit(
                                 _process_experiment_data,
