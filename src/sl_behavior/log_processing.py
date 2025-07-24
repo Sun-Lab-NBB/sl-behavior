@@ -1557,8 +1557,9 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> No
 
     # Instantiates the ProcessingTracker instance for behavior log processing and configures the underlying tracker file
     # to indicate that the processing is ongoing. Note, this automatically invalidates any previous processing runtimes.
-    tracker = ProcessingTracker(file_path=session_data.processed_data.behavior_processing_tracker_path)
-    tracker.start()
+    # TODO undo
+    # tracker = ProcessingTracker(file_path=session_data.processed_data.behavior_processing_tracker_path)
+    # tracker.start()
 
     try:
         # Resolves the paths to the specific directories used during processing
@@ -1696,10 +1697,14 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> No
                     pbar.update(1)
 
                 # Configures the tracker to indicate that the processing runtime completed successfully
-                tracker.stop()
+                # TODO undo
+                # tracker.stop()
     finally:
         # If the code reaches this section while the tracker indicates that the processing is still running,
         # this means that the processing runtime encountered an error. Configures the tracker to indicate that this
         # runtime finished with an error to prevent deadlocking future runtime calls.
-        if tracker.is_running:
-            tracker.error()
+        # TODO undo
+        # if tracker.is_running:
+        #     tracker.error()
+        pass
+
