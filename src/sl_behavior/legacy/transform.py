@@ -47,7 +47,7 @@ def assign_frame_info(data: pd.DataFrame, frames: pd.DataFrame, remove_nan: bool
     if remove_nan:
         frame_data = frame_data.dropna(subset=["frame"])
     else:
-        # Assigns -1 if the index is outside frame range
+        # Assigns -1 if the index is outside the frame range
         frame_data["frame"] = frame_data["frame"].fillna(value=-1)
         if "level_0" in frame_data.columns:
             frame_data = frame_data.drop(columns="level_0")
@@ -64,7 +64,7 @@ def forward_fill_missing_frame_info(
 
     This function is used to ensure that each Mesoscope frame is bundled with Gimbl data. To do so, for each actor
     (identified by 'name'), expands the rows to cover all Mesoscope frames acquired during the session. Then either
-    forward-fills (the default) the missing data or leaves it as None, depending on 'nan_fill' argument.
+    forward-fills (the default) the missing data or leaves it as None, depending on the 'nan_fill' argument.
 
     Args:
         frame_data: A Pandas DataFrame that stores the Gimbl log data with the "frame" columns. Typically, this
@@ -80,7 +80,7 @@ def forward_fill_missing_frame_info(
         data. The data in the output DataFrame is sorted by ["frame", "name"] before it is returned.
     """
 
-    # If column subset is not provided, works with all available columns
+    # If a column subset is not provided, works with all available columns
     if not subset_columns:
         subset_columns = frame_data.columns  # type: ignore
 
@@ -133,7 +133,7 @@ def add_ranged_timestamp_values(df: pd.DataFrame, timestamp_df: pd.DataFrame, fi
             [time_start, time_end] range.
 
     Returns:
-        The original 'df' DataFrame with the specified columns populated with additional data based on matching time
+        The original 'df' DataFrame with the specified columns is populated with additional data based on matching time
             ranges in 'df' and 'timestamp_df'. Columns are appended in the order encountered. Overlapping ranges in
             'timestamp_df' can result in 'df' data overwrites based on the later range in code iteration.
 
@@ -159,11 +159,6 @@ def add_ranged_timestamp_values(df: pd.DataFrame, timestamp_df: pd.DataFrame, fi
     missing_columns = list(set(fields).difference(set(df.columns)))
     for field in missing_columns:
         df[field] = None
-
-    # Extracts time arrays for interval checks
-    time = df["time_us"].values
-    start_times = timestamp_df["time_start"].values
-    end_times = timestamp_df["time_end"].values
 
     # Sorts timestamp_df by time_start for merge_asof
     timestamp_df = timestamp_df.sort_values("time_start")
@@ -213,10 +208,12 @@ def convert_reward_data(reward_df: pd.DataFrame) -> pd.DataFrame:
         # Creates sound_off rows
         sound_off_row = row.copy()
         sound_off_row["sound_on"] = False
+        # noinspection PyTypeChecker
         sound_off_row["time_us"] = original_ts + int(sound_off_row["sound_duration_ms"] * 1e3)
 
         # Creates valve_close rows
         valve_close_row = row.copy()
+        # noinspection PyTypeChecker
         valve_close_row["time_us"] = original_ts + int(valve_close_row["valve_time"])
         if valve_close_row["time_us"] >= sound_off_row["time_us"]:
             valve_close_row["sound_on"] = False

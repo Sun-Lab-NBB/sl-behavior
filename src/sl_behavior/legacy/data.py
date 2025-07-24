@@ -75,7 +75,7 @@ class GimblData:
     Attributes:
         time: A NumPy array that stores the global (UTC) session timestamps.
         info: A dictionary that stores the session's general information and metadata.
-        frames A Pandas DataFrame that stores Mesoscope frame data (e.g., frame indices, timestamps).
+        frames: A Pandas DataFrame that stores Mesoscope frame data (e.g., frame indices, timestamps).
         position: A TimeData instance that stores position data, such as animal's VR coordinates at each Mesoscope
             frame.
         path: A TimeData instance that stores VR path-related data, such as path names or positions along the path.
@@ -187,7 +187,7 @@ class GimblData:
             pos = fits[path_ind](value[0], value[1], value[2])
             result.append({"position": pos, "path": path_names[path_ind]})
 
-        # Converts the result to a Pandas dataframe and returns it to caller.
+        # Converts the result to a Pandas dataframe and returns it to the caller.
         return pd.DataFrame(result)
 
 

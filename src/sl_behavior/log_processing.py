@@ -26,7 +26,7 @@ from ataraxis_base_utilities import LogLevel, console
 from ataraxis_communication_interface import ExtractedModuleData, extract_logged_hardware_module_data
 
 # Stores acquisition systems supported by this library as a set.
-_supported_acquisition_systems = {AcquisitionSystems}
+_supported_acquisition_systems = {system for system in AcquisitionSystems}
 
 
 def _prepare_motif_data(
@@ -79,6 +79,71 @@ def _prepare_motif_data(
     return motifs_flat, motif_starts, motif_lengths, motif_indices, distances_array
 
 
+@njit(cache=True)  # type: ignore
+def _decompose_sequence_numba_flat(
+    cue_sequence: NDArray[np.uint8],
+    motifs_flat: NDArray[np.uint8],
+    motif_starts: NDArray[np.int32],
+    motif_lengths: NDArray[np.int32],
+    motif_indices: NDArray[np.int32],
+    max_trials: int,
+) -> tuple[NDArray[np.int32], int]:
+    """Decomposes a long sequence of Virtual Reality (VR) wall cues into individual trial motifs.
+
+    This is a worker function used to speed up decomposition via numba-acceleration.
+
+    Args:
+        cue_sequence: The full cue sequence to decompose.
+        motifs_flat: All motifs concatenated into a single 1D array.
+        motif_starts: Starting index of each motif in motifs_flat.
+        motif_lengths: The length of each motif.
+        motif_indices: Original indices of motifs (before sorting).
+        max_trials: The maximum number of trials that can make up the cue sequence.
+
+    Returns:
+        A tuple of two elements. The first element stores the array of trial type-indices (the sequence of trial
+        type indices). The second element stores the total number of trials extracted from the cue sequence.
+    """
+    # Prepares runtime trackers
+    trial_indices = np.zeros(max_trials, dtype=np.int32)
+    trial_count = 0
+    sequence_pos = 0
+    sequence_length = len(cue_sequence)
+    num_motifs = len(motif_lengths)
+
+    # Decomposes the sequence into trial motifs using greedy matching. Longer motifs are matched over shorter ones.
+    # Pre-specifying the maximum number of trials serves as a safety feature to avoid processing errors.
+    while sequence_pos < sequence_length and trial_count < max_trials:
+        motif_found = False
+
+        for i in range(num_motifs):
+            motif_length = motif_lengths[i]
+
+            # If the current sequence position is within the bounds of the motif, checks if it matches the motif.
+            if sequence_pos + motif_length <= sequence_length:
+                # Gets motif start position from the flat array
+                motif_start = motif_starts[i]
+
+                # Checks if the motif matches the evaluated sequence.
+                match = True
+                for j in range(motif_length):
+                    if cue_sequence[sequence_pos + j] != motifs_flat[motif_start + j]:
+                        match = False
+                        break
+                # If the motif matches, records the trial type index and moves to the next sequence position.
+                if match:
+                    trial_indices[trial_count] = motif_indices[i]
+                    trial_count += 1
+                    sequence_pos += motif_length
+                    motif_found = True
+                    break
+        # If the function is not able to pair a part of the sequence with a motif, aborts with an error.
+        if not motif_found:
+            return trial_indices, -1
+
+    return trial_indices[:trial_count], trial_count
+
+
 def _decompose_multiple_cue_sequences_into_trials(
     experiment_configuration: MesoscopeExperimentConfiguration,
     cue_sequences: list[NDArray[np.uint8]],
@@ -108,7 +173,7 @@ def _decompose_multiple_cue_sequences_into_trials(
     if len(cue_sequences) == 0:
         message = (
             f"Unable to decompose input cue sequence(s) into trials. Expected at least one cue sequence as input, but "
-            f"recevied none."
+            f"received none."
         )
         console.error(message=message, error=ValueError)
 
@@ -190,7 +255,7 @@ def _decompose_multiple_cue_sequences_into_trials(
                     # abrupt trial transition
                     truncated_distance = breakpoint_distance - cumulative_distance
 
-                    # Once the truncated trial is found, modifies the trials data to reflect the fact that the trial
+                    # Once the truncated trial is found, modifies the trials' data to reflect the fact that the trial
                     # did not reach the final associated distance.
                     if truncated_distance > 0:
                         all_trial_indices.append(trial_idx)
@@ -256,96 +321,148 @@ def _decompose_cue_sequence_into_trials(
     return trial_indices, trial_distances
 
 
-@njit(cache=True)  # type: ignore
-def _decompose_sequence_numba_flat(
-    cue_sequence: NDArray[np.uint8],
-    motifs_flat: NDArray[np.uint8],
-    motif_starts: NDArray[np.int32],
-    motif_lengths: NDArray[np.int32],
-    motif_indices: NDArray[np.int32],
-    max_trials: int,
-) -> tuple[NDArray[np.int32], int]:
-    """Decomposes a long sequence of Virtual Reality (VR) wall cues into individual trial motifs.
-
-    This is a worker function used to speed up decomposition via numba-acceleration.
-
-    Args:
-        cue_sequence: The full cue sequence to decompose.
-        motifs_flat: All motifs concatenated into a single 1D array.
-        motif_starts: Starting index of each motif in motifs_flat.
-        motif_lengths: The length of each motif.
-        motif_indices: Original indices of motifs (before sorting).
-        max_trials: The maximum number of trials that can make up the cue sequence.
-
-    Returns:
-        A tuple of two elements. The first element stores the array of trial type-indices (the sequence of trial
-        type indices). The second element stores the total number of trials extracted from the cue sequence.
-    """
-    # Prepares runtime trackers
-    trial_indices = np.zeros(max_trials, dtype=np.int32)
-    trial_count = 0
-    sequence_pos = 0
-    sequence_length = len(cue_sequence)
-    num_motifs = len(motif_lengths)
-
-    # Decomposes the sequence into trial motifs using greedy matching. Longer motifs are matched over shorter ones.
-    # Pre-specifying the maximum number of trials serves as a safety feature to avoid processing errors.
-    while sequence_pos < sequence_length and trial_count < max_trials:
-        motif_found = False
-
-        for i in range(num_motifs):
-            motif_length = motif_lengths[i]
-
-            # If the current sequence position is within the bounds of the motif, checks if it matches the motif.
-            if sequence_pos + motif_length <= sequence_length:
-                # Gets motif start position from the flat array
-                motif_start = motif_starts[i]
-
-                # Checks if the motif matches the evaluated sequence.
-                match = True
-                for j in range(motif_length):
-                    if cue_sequence[sequence_pos + j] != motifs_flat[motif_start + j]:
-                        match = False
-                        break
-                # If the motif matches, records the trial type index and moves to the next sequence position.
-                if match:
-                    trial_indices[trial_count] = motif_indices[i]
-                    trial_count += 1
-                    sequence_pos += motif_length
-                    motif_found = True
-                    break
-        # If the function is not able to pair a part of the sequence with a motif, aborts with an error.
-        if not motif_found:
-            return trial_indices, -1
-
-    return trial_indices[:trial_count], trial_count
-
-
 def _generate_cue_distance_map(
     experiment_configuration: MesoscopeExperimentConfiguration,
     trial_types: NDArray[np.int32],
     trial_distances: NDArray[np.float64],
-) -> tuple[NDArray[np.uint8], NDArray[np.float64], NDArray[np.bool]]:
+) -> tuple[NDArray[np.uint8], NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """Reconstructs the sequence of cues experienced by the animal at runtime using the input sequence of trials.
 
+    This function uses the sequence of trials generated by _decompose_cue_sequence_into_trials() and
+    _decompose_multiple_cue_sequences_into_trials() to reconstruct the sequence of VR cues experienced by the animal
+    at each traveled distance-point. This sequence properly integrates information from multiple VR cue sequences
+    generated at runtime, if the runtime was interrupted and had to regenerate the sequence at any point. This function
+    also generates and returns data on the location of each reward zone traversed by the animal.
+
+    Args:
+        experiment_configuration: The initialized ExperimentConfiguration instance for which to generate the cue-distance
+            data.
+        trial_types: A NumPy array that stores the indices of each trial type experienced by the animal at runtime. The
+            indices are used to query the trial data from the ExperimentConfiguration instance.
+        trial_distances: A NumPy array that stores the actual cumulative distance, in centimeters, at which the animal
+            fully completed the trial at runtime. The entries in this array should be in the same order as indices in
+            the trial_types array.
+
+    Returns:
+        A tuple of four NumPy arrays. The first array stores the IDs of the cues experienced by the animal at runtime.
+        The second array stores the total cumulative distance, in centimeters, traveled by the animal at the onset
+        of each cue stored in the first array. The third array stores the cumulative distance traveled by the animal
+        when it entered each reward zone encountered at runtime. The fourth array stores the cumulative distance
+        traveled by the animal when it exited each reward zone encountered at runtime.
+
+    """
     # Extracts the list of trial type objects from experiment configuration data
-    trials: list[ExperimentTrial] = [trial for trial in experiment_configuration.trial_structures.values()]
+    trials: list[ExperimentTrial] = [entry for entry in experiment_configuration.trial_structures.values()]
 
-    cue_map = experiment_configuration.cue_map
+    # Also extract the dictionary that maps wall cue IDs to the length of each cue, in centimeters and a static
+    # offset used to shift the animal's starting position on the VR track.
     cue_offset = experiment_configuration.cue_offset_cm
-    
-    distances: NDArray[np.float64] = np.zeros(shape=1, dtype=np.uint64)
-    cues: NDArray[np.uint8] = np.zeros(shape=1, dtype=np.uint8)
-    reward_zone_states: NDArray[np.bool] = np.zeros(shape=1, dtype=np.bool)
+    cue_map = experiment_configuration.cue_map  # Maps cue_id -> length_cm
 
+    # Pre-initializes output iterables as lists to efficiently support dynamic growth
+    distances_list: list[np.float64] = []
+    cues_list: list[np.uint8] = []
+    reward_zone_starts_list: list[np.float64] = []
+    reward_zone_ends_list: list[np.float64] = []
+
+    # Tracks the cumulative distance as the function essentially rebuilds the stitched cue sequence from trial
+    # information
+    cumulative_distance = np.float64(0)
+
+    # Track whether to apply the cue position offset, which is done at the start and after each trial truncation
+    # (sequence regeneration).
+    apply_offset_to_next_cue = True
+
+    # Loops over each trial in the sequence experienced by the animal and reconstructs the requested mappings
+    previous_trial_end_distance = np.float64(0)
     index: int
     trial: np.int32
     for index, trial in enumerate(trial_types):
-
+        # Uses the trial type to query the corresponding ExperimentTrial object for each trial. Note! This assumes that
+        # the items stored in the experiment configuration class always follow the same order and that the order used
+        # here and during sequence-to-trial decomposition is the same.
         trial_type = trials[trial]
-        trial_distance = trial_distances[index]
 
-        for cue in trial_type.cue_sequence:
-            pass
+        # Queries the actual distance traveled by the animal while running the processed trial
+        actual_trial_distance = trial_distances[index] - previous_trial_end_distance
+
+        # Queries the cue sequence for this trial
+        trial_cue_sequence = trial_type.cue_sequence  # List of cue IDs
+
+        # Tracks the distance within this trial to handle truncation
+        distance_within_trial = np.float64(0)
+
+        # Processes each cue in the trial
+        for cue_idx, cue_id in enumerate(trial_cue_sequence):
+            # Determines the length of each cue using the experiment cue_map
+            cue_length = cue_map[int(cue_id)]
+
+            # Applies offset if this is the first cue after a sequence start/restart
+            if apply_offset_to_next_cue and cue_idx == 0:
+                # This is the first cue of a new sequence (initial or after the sequence was regenerated). The animal
+                # starts cue_offset cm into this cue
+                effective_distance_to_next_cue = cue_length - cue_offset
+                apply_offset_to_next_cue = False
+            else:
+                effective_distance_to_next_cue = cue_length
+
+            # Checks if the trial is truncated (abruptly ended before completion). In this case, the actual trial
+            # distance would be less than the end-distance of the currently processed cue
+            if distance_within_trial + effective_distance_to_next_cue > actual_trial_distance:
+                # In this case, stops processing the trial after this cue
+                cues_list.append(np.uint8(cue_id))
+                distances_list.append(cumulative_distance)  # Logs current cue onset distance as the end of previous cue
+
+                # Updates the cumulative distance to the actual end of this trial. When the processing continues with
+                # the next sequence, this would be used to accurately reflect the partial coverage of this abruptly
+                # truncated cue.
+                cumulative_distance = previous_trial_end_distance + actual_trial_distance
+
+                # Since this trial was truncated, the next trial will start a new sequence, requiring the offset
+                # to be applied again
+                apply_offset_to_next_cue = True
+                break
+
+            else:
+                # Otherwise, includes each cue and associated distance in the distance list.
+                cues_list.append(np.uint8(cue_id))
+                distances_list.append(cumulative_distance)
+
+                # Updates distance trackers
+                cumulative_distance += effective_distance_to_next_cue
+                distance_within_trial += effective_distance_to_next_cue
+
+        # Queries reward zone boundaries relative to trial start.
+        reward_start_relative = trial_type.reward_zone_start_cm
+        reward_end_relative = trial_type.reward_zone_end_cm
+
+        # Converts to absolute positions given the global monotonically increasing traveled distance
+        reward_start_absolute = previous_trial_end_distance + reward_start_relative
+        reward_end_absolute = previous_trial_end_distance + reward_end_relative
+
+        # Only adds reward zones if the start falls within the actual distance traveled
+        if reward_start_absolute <= trial_distances[index]:
+            reward_zone_starts_list.append(reward_start_absolute)
+
+            # Clips the end if the trial was truncated before the animal reached the end of the reward zone
+            if reward_end_absolute <= trial_distances[index]:
+                reward_zone_ends_list.append(reward_end_absolute)
+            else:
+                # The reward zone was cut off by trial truncation, so 'ends' reward zone using the trial breakpoint
+                # data
+                # noinspection PyTypeChecker
+                reward_zone_ends_list.append(trial_distances[index])
+
+        # Updates previous trial end distance for next iteration
+        previous_trial_end_distance = trial_distances[index]
+
+    # Converts lists to numpy arrays and returns them to caller
+    distances = np.array(distances_list, dtype=np.float64)
+    cues = np.array(cues_list, dtype=np.uint8)
+    reward_zone_starts = np.array(reward_zone_starts_list, dtype=np.float64)
+    reward_zone_ends = np.array(reward_zone_ends_list, dtype=np.float64)
+
+    return cues, distances, reward_zone_starts, reward_zone_ends
 
 
 def _interpolate_data(
@@ -510,7 +627,7 @@ def _parse_ttl_data(extracted_module_data: ExtractedModuleData, output_directory
     # Determines the total length of the output array using the length of ON and OFF data arrays.
     total_length = len(on_data) + len(off_data)
 
-    # Precreates the storage numpy arrays for both message types. Timestamps use uint64 datatype and the trigger
+    # Precreates the storage numpy arrays for both message types. Timestamps use uint64 datatype, and the trigger
     # values are boolean. We use uint8 as it has the same memory footprint as a boolean and allows us to use integer
     # types across the entire dataset.
     timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
@@ -639,7 +756,7 @@ def _parse_valve_data(
     log_data = extracted_module_data.data
 
     # Here, we primarily look for event-codes 52 (Valve Open) and event-codes 53 (Valve Closed).
-    # We also look for codes 55 (ToneON) and 56 (ToneOFF) however and these codes are parsed similar to the
+    # We also look for codes 55 (ToneON) and 56 (ToneOFF), however, and these codes are parsed similar to the
     # ttl state codes.
 
     # The way this module is implemented guarantees there is at least one code 53 message, but there may be no code
@@ -648,7 +765,7 @@ def _parse_valve_data(
     closed_data = log_data[np.uint8(53)]
 
     # If there were no valve open events, no water was dispensed. In this case, uses the first code 53 timestamp
-    # to report zero-volume reward and ends the runtime early. If the valve was never opened, there were no
+    # to report a zero-volume reward and ends the runtime early. If the valve was never opened, there were no
     # tones, so this shorts both tone-parsing and valve-parsing
     if not open_data:
         module_dataframe = pl.DataFrame(
@@ -933,7 +1050,7 @@ def _parse_screen_data(extracted_module_data: ExtractedModuleData, output_direct
     log_data = extracted_module_data.data
     # Here, we only look for event-codes 52 (pulse ON) and event-codes 53 (pulse OFF).
 
-    # The way the module is implemented guarantees there is at least one code 53 message. However, if screen state
+    # The way the module is implemented guarantees there is at least one code 53 message. However, if the screen state
     # is never toggled, there may be no code 52 messages.
     on_data = log_data.get(np.uint8(52), [])
     off_data = log_data[np.uint8(53)]
@@ -950,7 +1067,7 @@ def _parse_screen_data(extracted_module_data: ExtractedModuleData, output_direct
         module_dataframe.write_ipc(file=output_directory.joinpath("screen_data.feather"), compression="lz4")
         return
 
-    # Precreates the storage numpy arrays for both message types. Timestamps use uint64 datatype and the trigger
+    # Precreates the storage numpy arrays for both message types. Timestamps use uint64 datatype, and the trigger
     # values are boolean. We use uint8 as it has the same memory footprint as a boolean and allows us to use integer
     # types across the entire dataset.
     total_length = len(on_data) + len(off_data)
@@ -1060,8 +1177,8 @@ def _process_runtime_data(
         message: NDArray[np.uint8] = archive[item]  # Extracts message payload from the compressed .npy file
 
         # Recovers the uint64 timestamp value from each message. The timestamp occupies 8 bytes of each logged
-        # message starting at index 1. If timestamp value is 0, the message contains the onset timestamp value
-        # stored as 8-byte payload. Index 0 stores the source ID (uint8 value)
+        # message starting at index 1. If the timestamp value is 0, the message contains the onset timestamp value
+        # stored as an 8-byte payload. Index 0 stores the source ID (uint8 value)
         if np.uint64(message[1:9].view(np.uint64)[0]) == 0:
             # Extracts the byte-serialized UTC timestamp stored as microseconds since epoch onset.
             onset_us = np.uint64(message[9:].view("<i8")[0].copy())
@@ -1115,8 +1232,9 @@ def _process_runtime_data(
         # If the starting code is 5, the message communicates the breakpoint distance for the current cue sequence.
         elif payload[0] == 5:
             # Skips the first byte (message code) and gets the next 8 bytes storing the distance as a float64
-            distance_bytes = serialized_data[1:9]
+            distance_bytes = payload[1:9]
             traveled_distance = distance_bytes.view(dtype="<f8")[0]  # Converts back to float64
+            # noinspection PyTypeChecker
             cue_sequence_breakpoints.append(traveled_distance)
 
         # Otherwise, the payload cannot be attributed to a known type and is, therefore, ignored
@@ -1163,7 +1281,6 @@ def _process_runtime_data(
 
     # Cue sequence for Mesoscope-VR system
     if experiment_configuration is not None:
-
         # Most sessions should only have a single cue sequence. However, if necessary, the runtime also supports
         # stitching multiple abruptly terminated sequences to recover useful information from sessions that encountered
         # issues during runtime.
@@ -1178,20 +1295,30 @@ def _process_runtime_data(
                 experiment_configuration=experiment_configuration, cue_sequence=cue_sequences.pop()
             )
 
-        # Uses the cue_map dictionary to compute the length of each cue in the sequence. Then computes the cumulative
-        # distance the animal needs to travel to reach each cue in the sequence. The first cue is associated with
-        # distance of 0 (the animal starts at this cue), the distance to each following cue is the sum of all previous
-        # cue lengths.
-        distance_sequence = np.zeros(len(cue_sequences), dtype=np.float64)
-        distance_sequence[1:] = np.cumsum([cue_map[int(code)] for code in cue_sequences[:-1]], dtype=np.float64)
+        # Uses the computed sequence of trials and the information stored inside the ExperimentConfiguration class to
+        # determine which cues were seen by the animal at which cumulative traveled distances. Also computes the
+        # traveled distance boundaries for reward zones.
+        cue_sequence, distance_sequence, reward_start, reward_stop = _generate_cue_distance_map(
+            experiment_configuration, trial_types, trial_distances
+        )
 
+        # Exports the cue-distance mapping as a Polars dataframe
         cue_dataframe = pl.DataFrame(
             {
-                "vr_cue": cue_sequences,
+                "vr_cue": cue_sequence,
                 "traveled_distance_cm": distance_sequence,
             }
         )
-        cue_dataframe.write_ipc(output_directory.joinpath("mesoscope_vr_cue_data.feather"), compression="lz4")
+        cue_dataframe.write_ipc(output_directory.joinpath("vr_cues.feather"), compression="lz4")
+
+        # Exports reward_zone-distance mapping as a Polars dataframe
+        reward_dataframe = pl.DataFrame(
+            {
+                "reward_zone_start_cm": reward_start,
+                "reward_zone_end_cm": reward_stop,
+            }
+        )
+        reward_dataframe.write_ipc(output_directory.joinpath("vr_reward_zones.feather"), compression="lz4")
 
 
 def _process_actor_data(log_path: Path, output_directory: Path, hardware_state: MesoscopeHardwareState) -> None:
@@ -1393,7 +1520,7 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> No
     relevant behavior data stored in these files into the processed_data directory.
 
     This function is intended to run on the BioHPC server as part of the 'general' data processing pipeline. It is
-    optimized to process all log files in parallel and extract the data stored inside the files into behavior_data
+    optimized to process all log files in parallel and extract the data stored inside the files into the behavior_data
     directory and camera_frames directory.
 
     Args:
@@ -1434,6 +1561,12 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> No
             file_path=hardware_configuration_path,
         )
 
+        experiment_configuration: MesoscopeExperimentConfiguration | None = None
+        if session_data.raw_data.experiment_configuration_path.exists():
+            experiment_configuration = MesoscopeExperimentConfiguration.from_yaml(  # type: ignore
+                file_path=session_data.raw_data.experiment_configuration_path
+            )
+
         # If there are no compressed log files to process, returns immediately
         if len(compressed_files) == 0:
             return
@@ -1444,14 +1577,14 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> No
             for file in compressed_files:
                 if session_data.acquisition_system == "mesoscope-vr":
                     # Acquisition System log file. Currently, all valid runtimes generate log data, so this file is
-                    # always parsed
+                    # always parsed.
                     if file.stem == "1_log":
                         futures.add(
                             executor.submit(
                                 _process_runtime_data,
                                 file,
                                 behavior_data_directory,
-                                hardware_configuration.cue_map,
+                                experiment_configuration,
                             )
                         )
 

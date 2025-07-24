@@ -1,4 +1,4 @@
-"""This module provides the high-level GIMBL .JSON log parsing logic. The logic from this module read the .JSOn file
+"""This module provides the high-level GIMBL .JSON log parsing logic. The logic from this module reads the .JSON file
 and parses it as multiple .feather files expected by the modern Sun lab data processing pipelines."""
 
 import os
@@ -115,8 +115,8 @@ def extract_gimbl_data(session_data: SessionData) -> None:
 
         console.echo(f"Processing legacy GIMBL log file...", level=LogLevel.INFO)
 
-        # Valid legacy session should contain a single .json file in the raw 'behavior_data' subdirectory. Otherwise,
-        # raises an error.
+        # A valid legacy session should contain a single .json file in the raw 'behavior_data' subdirectory. Otherwise,
+        # the function raises an error.
         json_files = [file for file in input_directory.glob("*.json")]
         if len(json_files) != 1:
             message = (
