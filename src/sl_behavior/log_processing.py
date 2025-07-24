@@ -24,6 +24,7 @@ from sl_shared_assets import (
 from ataraxis_video_system import extract_logged_video_system_data
 from ataraxis_base_utilities import LogLevel, console
 from ataraxis_communication_interface import ExtractedModuleData, extract_logged_hardware_module_data
+from ataraxis_time import PrecisionTimer
 
 # Stores acquisition systems supported by this library as a set.
 _supported_acquisition_systems = {system for system in AcquisitionSystems}
@@ -178,15 +179,11 @@ def _decompose_multiple_cue_sequences_into_trials(
         console.error(message=message, error=ValueError)
 
     if len(cue_sequences) > 1 and len(distance_breakpoints) != len(cue_sequences) - 1:
-        raise ValueError(
-            f"Number of distance breakpoints ({len(distance_breakpoints)}) must be "
-            f"number of sequences - 1 ({len(cue_sequences) - 1})"
+        message = (
+            f"Unable to decompose input cue sequence(s) into trials. Expected the number of distance breakpoints "
+            f"to be ({len(cue_sequences) - 1} (number of sequences - 1), but encountered ({len(distance_breakpoints)})."
         )
-    message = (
-        f"Unable to decompose input cue sequence(s) into trials. Expected the number of distance breakpoints "
-        f"to be ({len(cue_sequences) - 1} (number of sequences - 1), but encountered ({len(distance_breakpoints)})."
-    )
-    console.error(message=message, error=ValueError)
+        console.error(message=message, error=ValueError)
 
     # Extracts the list of trial structures supported by the processed experiment runtime
     trials: list[ExperimentTrial] = [trial for trial in experiment_configuration.trial_structures.values()]
@@ -1125,8 +1122,13 @@ def _process_camera_timestamps(log_path: Path, output_path: Path) -> None:
         log_path: The path to the .npz log archive to be parsed.
         output_path: The path to the output .feather file where to save the extracted data.
     """
+    timer = PrecisionTimer("ms")
+    timer.reset()
+
     # Extracts timestamp data from log archive
     timestamp_data = extract_logged_video_system_data(log_path)
+
+    console.echo(f"Loading and parsing data from camera log {log_path.name} took {round(timer.elapsed, 2)} seconds")
 
     # Converts extracted data to Polars series.
     timestamps_series = pl.Series(name="frame_time_us", values=timestamp_data)
@@ -1220,12 +1222,12 @@ def _process_runtime_data(
             experiment_timestamps.append(timestamp)
 
         # If the starting code is 3, the message communicates the current lick guidance state
-        elif len(payload) == 2 and payload[0] == 3:
+        elif payload[0] == 3:
             guidance_states.append(np.uint8(payload[1]))
             guidance_timestamps.append(timestamp)
 
         # If the starting code is 4, the message communicates the current reward collision wall visibility state
-        elif len(payload) == 2 and payload[0] == 4:
+        elif payload[0] == 4:
             reward_visibility_states.append(np.uint8(payload[1]))
             reward_visibility_timestamps.append(timestamp)
 
@@ -1268,7 +1270,7 @@ def _process_runtime_data(
             "lick_guidance_state": guidance_states,
         }
     )
-    system_dataframe.write_ipc(output_directory.joinpath("system_state_data.feather"), compression="lz4")
+    system_dataframe.write_ipc(output_directory.joinpath("guidance_state_data.feather"), compression="lz4")
 
     # Reward visibility states
     system_dataframe = pl.DataFrame(
@@ -1277,7 +1279,7 @@ def _process_runtime_data(
             "reward_visibility_state": reward_visibility_states,
         }
     )
-    system_dataframe.write_ipc(output_directory.joinpath("system_state_data.feather"), compression="lz4")
+    system_dataframe.write_ipc(output_directory.joinpath("reward_visibility_state_data.feather"), compression="lz4")
 
     # Cue sequence for Mesoscope-VR system
     if experiment_configuration is not None:
@@ -1366,7 +1368,10 @@ def _process_actor_data(log_path: Path, output_directory: Path, hardware_state: 
         return
 
     # Returns the data in the same order as the input module type_ids.
+    timer = PrecisionTimer("ms")
+    timer.reset()
     log_data_tuple = extract_logged_hardware_module_data(log_path=log_path, module_type_id=tuple(module_type_id))
+    console.echo(f"Loading data from actor log {log_path.name} took {round(timer.elapsed, 2)} seconds")
 
     # Since the most time-consuming step is reading the compressed data log, the time loss due to executing the
     # parsing steps sequentially is negligible.
@@ -1444,7 +1449,10 @@ def _process_sensor_data(log_path: Path, output_directory: Path, hardware_state:
         return
 
     # Extract all module data at once
+    timer = PrecisionTimer("ms")
+    timer.reset()
     log_data_tuple = extract_logged_hardware_module_data(log_path=log_path, module_type_id=tuple(module_type_id))
+    console.echo(f"Loading data from sensor log {log_path.name} took {round(timer.elapsed, 2)} seconds")
 
     # Parse each module's data
     # Lick Sensor
@@ -1504,7 +1512,10 @@ def _process_encoder_data(log_path: Path, output_directory: Path, hardware_state
         return
 
     # Extract module data
+    timer = PrecisionTimer("ms")
+    timer.reset()
     log_data_tuple = extract_logged_hardware_module_data(log_path=log_path, module_type_id=tuple(module_type_id))
+    console.echo(f"Loading data from encoder log {log_path.name} took {round(timer.elapsed, 2)} seconds")
 
     # Parse encoder data
     if data_indices[0] is not None:
