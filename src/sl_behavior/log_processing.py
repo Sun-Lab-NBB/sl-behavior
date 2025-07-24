@@ -322,7 +322,7 @@ def _process_trial_sequence(
     experiment_configuration: MesoscopeExperimentConfiguration,
     trial_types: NDArray[np.int32],
     trial_distances: NDArray[np.float64],
-) -> tuple[NDArray[np.uint8], NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+) -> tuple[NDArray[np.uint8], NDArray[np.float64], NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
     """Processes the sequence of trials experienced by the animal during runtime to extract various trial metadata
     information.
 
@@ -1306,7 +1306,7 @@ def _process_runtime_data(
         # Uses the computed sequence of trials and the information stored inside the ExperimentConfiguration class to
         # determine which cues were seen by the animal at which cumulative traveled distances. Also computes the
         # traveled distance boundaries for reward zones.
-        cue_sequence, distance_sequence, reward_start, reward_stop = _process_trial_sequence(
+        cue_sequence, distance_sequence, reward_start, reward_stop, trial_start = _process_trial_sequence(
             experiment_configuration, trial_types, trial_distances
         )
 
@@ -1327,6 +1327,15 @@ def _process_runtime_data(
             }
         )
         reward_dataframe.write_ipc(output_directory.joinpath("vr_reward_zones.feather"), compression="lz4")
+
+        # Exports trial-distance mapping as a Polars dataframe
+        trial_dataframe = pl.DataFrame(
+            {
+                "trial_type_index": trial_types,
+                "traveled_distance_cm": trial_start,
+            }
+        )
+        trial_dataframe.write_ipc(output_directory.joinpath("trials.feather"), compression="lz4")
 
 
 def _process_actor_data(log_path: Path, output_directory: Path, hardware_state: MesoscopeHardwareState) -> None:
