@@ -54,7 +54,7 @@ dependencies = [
     "pandas==2.3.1",
     "polars==1.31.0",
     "pyarrow==20.0.0",
-    "sl-shared-assets==3.0.0",
+    "sl-shared-assets==3.0.1",
 ]
 
 [project.urls]

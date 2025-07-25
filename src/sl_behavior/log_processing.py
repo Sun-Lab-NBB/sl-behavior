@@ -1317,7 +1317,7 @@ def _process_runtime_data(
                 "traveled_distance_cm": distance_sequence,
             }
         )
-        cue_dataframe.write_ipc(output_directory.joinpath("vr_cues.feather"), compression="lz4")
+        cue_dataframe.write_ipc(output_directory.joinpath("vr_cue_data.feather"), compression="lz4")
 
         # Exports reward_zone-distance mapping as a Polars dataframe
         reward_dataframe = pl.DataFrame(
@@ -1326,7 +1326,7 @@ def _process_runtime_data(
                 "reward_zone_end_cm": reward_stop,
             }
         )
-        reward_dataframe.write_ipc(output_directory.joinpath("vr_reward_zones.feather"), compression="lz4")
+        reward_dataframe.write_ipc(output_directory.joinpath("vr_reward_zone_data.feather"), compression="lz4")
 
         # Exports trial-distance mapping as a Polars dataframe
         trial_dataframe = pl.DataFrame(
@@ -1335,7 +1335,7 @@ def _process_runtime_data(
                 "traveled_distance_cm": trial_start,
             }
         )
-        trial_dataframe.write_ipc(output_directory.joinpath("trials.feather"), compression="lz4")
+        trial_dataframe.write_ipc(output_directory.joinpath("trial_data.feather"), compression="lz4")
 
 
 def _process_actor_data(log_path: Path, output_directory: Path, hardware_state: MesoscopeHardwareState) -> None:
@@ -1557,9 +1557,8 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> No
 
     # Instantiates the ProcessingTracker instance for behavior log processing and configures the underlying tracker file
     # to indicate that the processing is ongoing. Note, this automatically invalidates any previous processing runtimes.
-    # TODO undo
-    # tracker = ProcessingTracker(file_path=session_data.processed_data.behavior_processing_tracker_path)
-    # tracker.start()
+    tracker = ProcessingTracker(file_path=session_data.processed_data.behavior_processing_tracker_path)
+    tracker.start()
 
     try:
         # Resolves the paths to the specific directories used during processing
@@ -1598,11 +1597,21 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> No
         if len(compressed_files) == 0:
             return
 
-        # Iterates over all compressed log files and processes them in-parallel
-        with ProcessPoolExecutor(max_workers=parallel_workers) as executor:
-            futures = set()
-            for file in compressed_files:
-                if session_data.acquisition_system == "mesoscope-vr":
+        # Mesoscope VR Processing
+        if session_data.acquisition_system == AcquisitionSystems.MESOSCOPE_VR:
+
+            # Iterates over all compressed log files and processes them in-parallel
+            with ProcessPoolExecutor(max_workers=parallel_workers) as executor:
+
+                message = (
+                    f"Processing behavior log files acquired with the Mesoscope-VR acquisition system during the "
+                    f"session {session_data.session_name} of animal {session_data.animal_id} and project "
+                    f"{session_data.project_name}..."
+                )
+                console.echo(message=message, level=LogLevel.INFO)
+
+                futures = set()
+                for file in compressed_files:
                     # Acquisition System log file. Currently, all valid runtimes generate log data, so this file is
                     # always parsed.
                     if file.stem == "1_log":
@@ -1677,34 +1686,38 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> No
                                 hardware_configuration,
                             )
                         )
-                else:
-                    message = (
-                        f"Behavior data processing logic for the acquisition system {session_data.acquisition_system} "
-                        f"is not implemented. Unable to process the session {session_data.session_name} of "
-                        f"animal {session_data.animal_id} and project {session_data.project_name}."
-                    )
-                    console.error(message=message, error=NotImplementedError)
 
-            # Displays a progress bar to track the parsing status if the function is called in the verbose mode.
-            with tqdm(
-                total=len(futures),
-                desc=f"Processing log files",
-                unit="file",
-            ) as pbar:
-                for future in as_completed(futures):
-                    # Propagates any exceptions from the transfers
-                    future.result()
-                    pbar.update(1)
+                # Displays a progress bar to track the parsing status if the function is called in the verbose mode.
+                with tqdm(
+                        total=len(futures),
+                        desc=f"Processing log files",
+                        unit="file",
+                ) as pbar:
+                    for future in as_completed(futures):
+                        # Propagates any exceptions from the transfers
+                        future.result()
+                        pbar.update(1)
 
-                # Configures the tracker to indicate that the processing runtime completed successfully
-                # TODO undo
-                # tracker.stop()
+                    # Configures the tracker to indicate that the processing runtime completed successfully
+                    tracker.stop()
+
+        # Aborts with an error if processing logic for the target acquisition system is not implemented
+        else:
+            message = (
+                f"Behavior data processing logic for the acquisition system {session_data.acquisition_system} "
+                f"is not implemented. Unable to process the session {session_data.session_name} of "
+                f"animal {session_data.animal_id} and project {session_data.project_name}."
+            )
+            console.error(message=message, error=NotImplementedError)
+
+        message = (
+            f"Log processing: Complete."
+        )
+        console.echo(message=message, level=LogLevel.SUCCESS)
+
     finally:
         # If the code reaches this section while the tracker indicates that the processing is still running,
         # this means that the processing runtime encountered an error. Configures the tracker to indicate that this
         # runtime finished with an error to prevent deadlocking future runtime calls.
-        # TODO undo
-        # if tracker.is_running:
-        #     tracker.error()
-        pass
-
+        if tracker.is_running:
+            tracker.error()
