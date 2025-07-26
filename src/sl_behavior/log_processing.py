@@ -24,7 +24,6 @@ from sl_shared_assets import (
 from ataraxis_video_system import extract_logged_video_system_data
 from ataraxis_base_utilities import LogLevel, console
 from ataraxis_communication_interface import ExtractedModuleData, extract_logged_hardware_module_data
-from ataraxis_time import PrecisionTimer
 
 # Stores acquisition systems supported by this library as a set.
 _supported_acquisition_systems = {system for system in AcquisitionSystems}
@@ -1127,13 +1126,8 @@ def _process_camera_timestamps(log_path: Path, output_path: Path) -> None:
         log_path: The path to the .npz log archive to be parsed.
         output_path: The path to the output .feather file where to save the extracted data.
     """
-    timer = PrecisionTimer("ms")
-    timer.reset()
-
     # Extracts timestamp data from log archive
     timestamp_data = extract_logged_video_system_data(log_path)
-
-    console.echo(f"Loading and parsing data from camera log {log_path.name} took {round(timer.elapsed, 2)} seconds")
 
     # Converts extracted data to Polars series.
     timestamps_series = pl.Series(name="frame_time_us", values=timestamp_data)
@@ -1288,7 +1282,6 @@ def _process_runtime_data(
 
     # Cue sequence for Mesoscope-VR system
     if experiment_configuration is not None:
-
         # Most sessions should only have a single cue sequence. However, if necessary, the runtime also supports
         # stitching multiple abruptly terminated sequences to recover useful information from sessions that encountered
         # issues during runtime.
@@ -1383,10 +1376,7 @@ def _process_actor_data(log_path: Path, output_directory: Path, hardware_state: 
         return
 
     # Returns the data in the same order as the input module type_ids.
-    timer = PrecisionTimer("ms")
-    timer.reset()
     log_data_tuple = extract_logged_hardware_module_data(log_path=log_path, module_type_id=tuple(module_type_id))
-    console.echo(f"Loading data from actor log {log_path.name} took {round(timer.elapsed, 2)} seconds")
 
     # Since the most time-consuming step is reading the compressed data log, the time loss due to executing the
     # parsing steps sequentially is negligible.
@@ -1464,10 +1454,7 @@ def _process_sensor_data(log_path: Path, output_directory: Path, hardware_state:
         return
 
     # Extract all module data at once
-    timer = PrecisionTimer("ms")
-    timer.reset()
     log_data_tuple = extract_logged_hardware_module_data(log_path=log_path, module_type_id=tuple(module_type_id))
-    console.echo(f"Loading data from sensor log {log_path.name} took {round(timer.elapsed, 2)} seconds")
 
     # Parse each module's data
     # Lick Sensor
@@ -1527,10 +1514,7 @@ def _process_encoder_data(log_path: Path, output_directory: Path, hardware_state
         return
 
     # Extract module data
-    timer = PrecisionTimer("ms")
-    timer.reset()
     log_data_tuple = extract_logged_hardware_module_data(log_path=log_path, module_type_id=tuple(module_type_id))
-    console.echo(f"Loading data from encoder log {log_path.name} took {round(timer.elapsed, 2)} seconds")
 
     # Parse encoder data
     if data_indices[0] is not None:
@@ -1599,10 +1583,8 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> No
 
         # Mesoscope VR Processing
         if session_data.acquisition_system == AcquisitionSystems.MESOSCOPE_VR:
-
             # Iterates over all compressed log files and processes them in-parallel
             with ProcessPoolExecutor(max_workers=parallel_workers) as executor:
-
                 message = (
                     f"Processing behavior log files acquired with the Mesoscope-VR acquisition system during the "
                     f"session {session_data.session_name} of animal {session_data.animal_id} and project "
@@ -1689,12 +1671,12 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> No
 
                 # Displays a progress bar to track the parsing status if the function is called in the verbose mode.
                 with tqdm(
-                        total=len(futures),
-                        desc=f"Processing log files",
-                        unit="file",
+                    total=len(futures),
+                    desc=f"Processing log files",
+                    unit="file",
                 ) as pbar:
                     for future in as_completed(futures):
-                        # Propagates any exceptions from the transfers
+                        # Propagates any exceptions from the worker processes
                         future.result()
                         pbar.update(1)
 
@@ -1710,10 +1692,7 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> No
             )
             console.error(message=message, error=NotImplementedError)
 
-        message = (
-            f"Log processing: Complete."
-        )
-        console.echo(message=message, level=LogLevel.SUCCESS)
+        console.echo(message="Log processing: Complete.", level=LogLevel.SUCCESS)
 
     finally:
         # If the code reaches this section while the tracker indicates that the processing is still running,

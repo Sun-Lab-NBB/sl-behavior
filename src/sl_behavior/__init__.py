@@ -5,7 +5,13 @@ API documentation: https://sl-behavior-api-docs.netlify.app/
 Authors: Ivan Kondratyev, Kushaan Gupta, Natalie Yeung
 """
 
+from ataraxis_base_utilities import console
+
 from .legacy import extract_gimbl_data
 from .log_processing import extract_log_data
+
+# Ensures that console output is enabled
+if not console.enabled:
+    console.enable()
 
 __all__ = ["extract_gimbl_data", "extract_log_data"]
