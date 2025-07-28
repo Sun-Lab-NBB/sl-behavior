@@ -22,6 +22,7 @@ from sl_shared_assets import (
     MesoscopeExperimentConfiguration,
 )
 from ataraxis_video_system import extract_logged_video_system_data
+from sl_shared_assets.tools import generate_project_manifest
 from ataraxis_base_utilities import LogLevel, console
 from ataraxis_communication_interface import ExtractedModuleData, extract_logged_hardware_module_data
 
@@ -1262,26 +1263,30 @@ def _process_runtime_data(
     )
     exp_dataframe.write_ipc(output_directory.joinpath("experiment_state_data.feather"), compression="lz4")
 
-    # Lick guidance states
-    system_dataframe = pl.DataFrame(
-        {
-            "time_us": guidance_timestamps,
-            "lick_guidance_state": guidance_states,
-        }
-    )
-    system_dataframe.write_ipc(output_directory.joinpath("guidance_state_data.feather"), compression="lz4")
-
-    # Reward visibility states
-    system_dataframe = pl.DataFrame(
-        {
-            "time_us": reward_visibility_timestamps,
-            "reward_visibility_state": reward_visibility_states,
-        }
-    )
-    system_dataframe.write_ipc(output_directory.joinpath("reward_visibility_state_data.feather"), compression="lz4")
-
-    # Cue sequence for Mesoscope-VR system
+    # Note, although lick guidance and reward visibility are parsed for all sessions, this data only exists for
+    # experiment sessions. Therefore, only attempt to export the data if the processed session is an experiment session.
+    # The same holds with respect to the VR track data parsed below.
     if experiment_configuration is not None:
+        # Lick guidance states
+        system_dataframe = pl.DataFrame(
+            {
+                "time_us": guidance_timestamps,
+                "lick_guidance_state": guidance_states,
+            }
+        )
+        system_dataframe.write_ipc(output_directory.joinpath("guidance_state_data.feather"), compression="lz4")
+
+        # Reward visibility states
+        system_dataframe = pl.DataFrame(
+            {
+                "time_us": reward_visibility_timestamps,
+                "reward_visibility_state": reward_visibility_states,
+            }
+        )
+        system_dataframe.write_ipc(output_directory.joinpath("reward_visibility_state_data.feather"), compression="lz4")
+
+        # Cue sequence for Mesoscope-VR system
+
         # Most sessions should only have a single cue sequence. However, if necessary, the runtime also supports
         # stitching multiple abruptly terminated sequences to recover useful information from sessions that encountered
         # issues during runtime.
@@ -1525,7 +1530,7 @@ def _process_encoder_data(log_path: Path, output_directory: Path, hardware_state
         )
 
 
-def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> None:
+def extract_log_data(session_data: SessionData, parallel_workers: int = 7, update_manifest: bool = False) -> None:
     """Reads the compressed .npz log files stored in the raw_data directory of the target session and extracts all
     relevant behavior data stored in these files into the processed_data directory.
 
@@ -1537,6 +1542,9 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> No
         session_data: The SessionData instance for the processed session.
         parallel_workers: The number of CPU cores (workers) to use for processing the data in parallel. Note, this
             number should not exceed the number of available log files.
+        update_manifest: Determines whether to update (regenerate) the project manifest file for the processed
+            session's project. This should always be enabled when working with remote compute server(s) to ensure that
+            the project manifest file contains the most actual snapshot of the project's state.
     """
 
     # Instantiates the ProcessingTracker instance for behavior log processing and configures the underlying tracker file
@@ -1700,3 +1708,19 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7) -> No
         # runtime finished with an error to prevent deadlocking future runtime calls.
         if tracker.is_running:
             tracker.error()
+
+        # If the runtime is configured to generate the project manifest file, attempts to generate and overwrite the
+        # existing manifest file for the target project.
+        if update_manifest:
+            # All sessions are stored under root/project/animal/session. SessionData exposes paths to either raw_data or
+            # processed_data subdirectories under the root session directory on each volume. Indexing parents of
+            # SessionData paths gives project-specific directory at index 2 and the root for that directory at index 3.
+            raw_directory = session_data.raw_data.raw_data_path.parents[2]
+            processed_directory = session_data.processed_data.processed_data_path.parents[3]
+
+            # Generates the manifest file inside the root raw data project directory
+            generate_project_manifest(
+                raw_project_directory=raw_directory,
+                processed_data_root=processed_directory,
+                output_directory=raw_directory,
+            )

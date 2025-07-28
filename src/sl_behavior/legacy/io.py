@@ -7,6 +7,7 @@ from typing import Mapping, Sequence
 import numpy as np
 import pandas as pd
 from sl_shared_assets import SessionData, ProcessingTracker
+from sl_shared_assets.tools import generate_project_manifest
 from ataraxis_base_utilities import LogLevel, console
 
 from .parse import (
@@ -92,7 +93,7 @@ def _extract_cue_changes(
     ).reset_index(drop=True)
 
 
-def extract_gimbl_data(session_data: SessionData) -> None:
+def extract_gimbl_data(session_data: SessionData, update_manifest: bool = False) -> None:
     """Reads and exports the data stored in the GIMBL .JSOn file to individual .feather files.
 
     This is a service function designed to process the legacy data from the Tyche dataset. It should not be used with
@@ -101,6 +102,9 @@ def extract_gimbl_data(session_data: SessionData) -> None:
 
     Args:
         session_data: The SessionData instance for the session whose legacy log data needs to be processed.
+        update_manifest: Determines whether to update (regenerate) the project manifest file for the processed
+            session's project. This should always be enabled when working with remote compute server(s) to ensure that
+            the project manifest file contains the most actual snapshot of the project's state.
     """
 
     # Instantiates the ProcessingTracker instance for behavior log processing and configures the underlying tracker file
@@ -246,3 +250,19 @@ def extract_gimbl_data(session_data: SessionData) -> None:
         # runtime finished with an error to prevent deadlocking the runtime.
         if tracker.is_running:
             tracker.error()
+
+        # If the runtime is configured to generate the project manifest file, attempts to generate and overwrite the
+        # existing manifest file for the target project.
+        if update_manifest:
+            # All sessions are stored under root/project/animal/session. SessionData exposes paths to either raw_data or
+            # processed_data subdirectories under the root session directory on each volume. Indexing parents of
+            # SessionData paths gives project-specific directory at index 2 and the root for that directory at index 3.
+            raw_directory = session_data.raw_data.raw_data_path.parents[2]
+            processed_directory = session_data.processed_data.processed_data_path.parents[3]
+
+            # Generates the manifest file inside the root raw data project directory
+            generate_project_manifest(
+                raw_project_directory=raw_directory,
+                processed_data_root=processed_directory,
+                output_directory=raw_directory,
+            )
