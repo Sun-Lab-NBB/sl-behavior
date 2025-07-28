@@ -8,11 +8,11 @@ build-backend = "hatchling.build"
 # Project metdata section. Provides the genral ID information about the project.
 [project]
 name = "sl-behavior"
-version = "1.0.0"
+version = "2.0.0"
 description = "Provides tools for processing non-visual behavior data acquired in the Sun (NeuroAI) lab."
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.11, <3.13"  # Until AXVS and DLC support 3.12+
+requires-python = ">=3.11, <3.12"  # Until AXVS supports 3.12+
 authors = [
     {name = "Ivan Kondratyev"},
     {name = "Kushaan Gupta"},
@@ -41,18 +41,20 @@ classifiers = [
 
 # Runtime project dependencies. This overlaps with the 'condarun' optional list.
 dependencies = [
-    "click>=8,<9",
-    "numpy>=2,<3",
-    "scipy>=1,<2",
-    "ataraxis-base-utilities>=3,<4",
-    "ataraxis-transport-layer-pc>=1,<2",
-    "ataraxis-communication-interface>=3.1.0,<4",
-    "ataraxis-video-system>=1.1.0,<2",
-    "tqdm>=4,<5",
-    "pandas>=2,<3",
-    "polars>=1,<2",
-    "pyarrow>=20,<21",
-    "sl-shared-assets==2.0.1",
+    "click==8.2.1",
+    "numpy==2.2.6",
+    "numba==0.61.2",
+    "intel-cmplr-lib-rt==2025.1.1",
+    "scipy==1.16.0",
+    "ataraxis-base-utilities==3.1.0",
+    "ataraxis-data-structures==3.1.1",
+    "ataraxis-video-system==1.1.0",
+    "ataraxis-communication-interface==3.2.1",
+    "tqdm==4.67.1",
+    "pandas==2.3.1",
+    "polars==1.31.0",
+    "pyarrow==20.0.0",
+    "sl-shared-assets==3.1.2",
 ]
 
 [project.urls]
@@ -67,13 +69,14 @@ Documentation = "https://sl-behavior-api-docs.netlify.app/"
 # (OSX ARM64, WIN AMD64, LIN AMD64). This specification is used by ataraxis-automation to resolve as many
 # project dependencies with conda over pip as possible.
 condarun = [
-    "numpy>=2,<3",
-    "scipy>=1,<2",
-    "tqdm>=4,<5",
-    "click>=8,<9",
-    "pandas>=2,<3",
-    "polars>=1,<2",
-    "pyarrow>=20,<21",
+    "numpy==2.2.6",
+    "numba==0.61.2",
+    "scipy==1.16.0",
+    "tqdm==4.67.1",
+    "click==8.2.1",
+    "pandas==2.3.1",
+    "polars==1.31.0",
+    "pyarrow==20.0.0",
 ]
 
 # Dependencies known to be installable with conda for all development platforms (OSX ARM64, WIN AMD64, LIN AMD64).

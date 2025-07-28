@@ -54,8 +54,22 @@ from .log_processing import extract_log_data
         "remote compute server."
     ),
 )
+@click.option(
+    "-um",
+    "--update_manifest",
+    is_flag=True,
+    help=(
+        "Determines whether to (re)generate the manifest file for the processed session's project. This flag "
+        "should always be enabled when this CLI is executed on the remote compute server(s) to ensure that the "
+        "manifest file always reflects the most actual state of each project."
+    ),
+)
 def extract_behavior_data(
-    session_path: Path, processed_data_root: Path, legacy: bool, create_processed_directories: bool
+    session_path: Path,
+    processed_data_root: Path,
+    legacy: bool,
+    create_processed_directories: bool,
+    update_manifest: bool,
 ) -> None:
     # Instantiates the SessionData instance for the processed session
     session_data = SessionData.load(
@@ -67,7 +81,7 @@ def extract_behavior_data(
     # If the processed session is a modern Sun lab session, extracts session's behavior data from multiple .npz log
     # files
     if not legacy:
-        extract_log_data(session_data=session_data)
+        extract_log_data(session_data=session_data, update_manifest=update_manifest)
     else:
         # Otherwise, extracts session's behavior data from the single GIMBL.json log file
-        extract_gimbl_data(session_data=session_data)
+        extract_gimbl_data(session_data=session_data, update_manifest=update_manifest)
