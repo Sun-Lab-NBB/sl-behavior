@@ -117,6 +117,15 @@ def extract_gimbl_data(session_data: SessionData, update_manifest: bool = False)
         input_directory = session_data.raw_data.behavior_data_path
         output_directory = session_data.processed_data.behavior_data_path
 
+        if session_data.project_name != "Tyche":
+            message = (
+                f"Unable to process behavior data for legacy session '{session_data.session_name}' of "
+                f"animal {session_data.animal_id}. The input session belong to the project {session_data.project_name} "
+                f"instead of the expected 'Tyche' project. Currently, legacy data parsing only supports sessions "
+                f"acquired under the Tyche project."
+            )
+            console.error(message=message, error=ValueError)
+
         console.echo(f"Processing legacy GIMBL log file...", level=LogLevel.INFO)
 
         # A valid legacy session should contain a single .json file in the raw 'behavior_data' subdirectory. Otherwise,
@@ -124,7 +133,7 @@ def extract_gimbl_data(session_data: SessionData, update_manifest: bool = False)
         json_files = [file for file in input_directory.glob("*.json")]
         if len(json_files) != 1:
             message = (
-                f"Unable to extract the legacy behavior data from the GIMBL .JSOn log file. Expected a single .json "
+                f"Unable to extract the legacy behavior data from the GIMBL .JSON log file. Expected a single .json "
                 f"file in the raw 'behavior_data' subdirectory of the processed session, but instead encountered "
                 f"{len(json_files)} files."
             )

@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 from numpy.lib.npyio import NpzFile
 from sl_shared_assets import (
     SessionData,
+    SessionTypes,
     ExperimentTrial,
     ProcessingTracker,
     AcquisitionSystems,
@@ -27,7 +28,8 @@ from ataraxis_base_utilities import LogLevel, console
 from ataraxis_communication_interface import ExtractedModuleData, extract_logged_hardware_module_data
 
 # Stores acquisition systems supported by this library as a set.
-_supported_acquisition_systems = {system for system in AcquisitionSystems}
+_supported_acquisition_systems = {AcquisitionSystems.MESOSCOPE_VR}
+_supported_session_types = {SessionTypes.MESOSCOPE_EXPERIMENT, SessionTypes.RUN_TRAINING, SessionTypes.LICK_TRAINING}
 
 
 def _prepare_motif_data(
@@ -1568,6 +1570,15 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7, updat
                 f"acquired with an unsupported acquisition system: {session_data.acquisition_system}. Currently, "
                 f"only sessions acquired using the following acquisition systems are supported: "
                 f"{', '.join(_supported_acquisition_systems)}."
+            )
+            console.error(message=message, error=ValueError)
+
+        if session_data.session_type not in _supported_session_types:
+            message = (
+                f"Unable to process behavior data for session '{session_data.session_name}' of "
+                f"animal {session_data.animal_id} and project {session_data.project_name}. The input session is of an "
+                f"unsupported type {session_data.session_type}. Currently, only the following session types are "
+                f"supported: {', '.join(_supported_session_types)}."
             )
             console.error(message=message, error=ValueError)
 

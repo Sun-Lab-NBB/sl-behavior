@@ -8,6 +8,7 @@ from sl_shared_assets import SessionData, MesoscopeHardwareState, MesoscopeExper
 from ataraxis_communication_interface import ExtractedModuleData
 
 _supported_acquisition_systems: Incomplete
+_supported_session_types: Incomplete
 
 def _prepare_motif_data(
     trial_motifs: list[NDArray[np.uint8]], trial_distances: list[float]

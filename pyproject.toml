@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 # Project metdata section. Provides the genral ID information about the project.
 [project]
 name = "sl-behavior"
-version = "2.0.0"
+version = "2.0.1"
 description = "Provides tools for processing non-visual behavior data acquired in the Sun (NeuroAI) lab."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -172,7 +172,7 @@ lint.ignore = [
 quote-style = "double"             # Uses double quotes for strings
 indent-style = "space"             # Uses space for indents
 skip-magic-trailing-comma = false  # Like black, ignores trailing commas
-line-ending = "auto"               # Automatically detects and standardizes line ending character
+line-ending = "auto"               # Automatically detects and standardizes line-ending character
 
 # Docstrings and comments' line length
 [tool.ruff.lint.pycodestyle]
