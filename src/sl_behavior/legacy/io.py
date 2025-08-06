@@ -6,8 +6,7 @@ from typing import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
-from sl_shared_assets import SessionData, ProcessingTracker
-from sl_shared_assets.tools import generate_project_manifest
+from sl_shared_assets import SessionData, TrackerFileNames, get_processing_tracker, generate_project_manifest
 from ataraxis_base_utilities import LogLevel, console
 
 from .parse import (
@@ -93,7 +92,7 @@ def _extract_cue_changes(
     ).reset_index(drop=True)
 
 
-def extract_gimbl_data(session_data: SessionData, update_manifest: bool = False) -> None:
+def extract_gimbl_data(session_data: SessionData, manager_id: int, update_manifest: bool = False) -> None:
     """Reads and exports the data stored in the GIMBL .JSOn file to individual .feather files.
 
     This is a service function designed to process the legacy data from the Tyche dataset. It should not be used with
@@ -102,6 +101,8 @@ def extract_gimbl_data(session_data: SessionData, update_manifest: bool = False)
 
     Args:
         session_data: The SessionData instance for the session whose legacy log data needs to be processed.
+        manager_id: The xxHash-64 hash-value that specifies the unique identifier of the manager process that
+            manages the log processing runtime.
         update_manifest: Determines whether to update (regenerate) the project manifest file for the processed
             session's project. This should always be enabled when working with remote compute server(s) to ensure that
             the project manifest file contains the most actual snapshot of the project's state.
@@ -109,8 +110,10 @@ def extract_gimbl_data(session_data: SessionData, update_manifest: bool = False)
 
     # Instantiates the ProcessingTracker instance for behavior log processing and configures the underlying tracker file
     # to indicate that the processing is ongoing. Note, this automatically invalidates any previous processing runtimes.
-    tracker = ProcessingTracker(file_path=session_data.processed_data.behavior_processing_tracker_path)
-    tracker.start()
+    tracker = get_processing_tracker(
+        root=session_data.processed_data.processed_data_path, file_name=TrackerFileNames.BEHAVIOR
+    )
+    tracker.start(manager_id=manager_id)
 
     try:
         # Resolves input and output directory paths using SessionData
@@ -249,7 +252,7 @@ def extract_gimbl_data(session_data: SessionData, update_manifest: bool = False)
         period_data.to_feather(os.path.join(output_directory, "period_data.feather"))
 
         # Configures the tracker to indicate that the processing runtime completed successfully
-        tracker.stop()
+        tracker.stop(manager_id=manager_id)
 
         console.echo(f"Legacy GIMBL log file: Processed.", level=LogLevel.SUCCESS)
 
@@ -258,7 +261,7 @@ def extract_gimbl_data(session_data: SessionData, update_manifest: bool = False)
         # this means that the verification runtime encountered an error. Configures the tracker to indicate that this
         # runtime finished with an error to prevent deadlocking the runtime.
         if tracker.is_running:
-            tracker.error()
+            tracker.error(manager_id=manager_id)
 
         # If the runtime is configured to generate the project manifest file, attempts to generate and overwrite the
         # existing manifest file for the target project.

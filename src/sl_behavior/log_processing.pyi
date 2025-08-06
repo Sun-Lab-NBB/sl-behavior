@@ -348,7 +348,9 @@ def _process_encoder_data(log_path: Path, output_directory: Path, hardware_state
             data.
     """
 
-def extract_log_data(session_data: SessionData, parallel_workers: int = 7, update_manifest: bool = False) -> None:
+def extract_log_data(
+    session_data: SessionData, manager_id: int, parallel_workers: int = 7, update_manifest: bool = False
+) -> None:
     """Reads the compressed .npz log files stored in the raw_data directory of the target session and extracts all
     relevant behavior data stored in these files into the processed_data directory.
 
@@ -358,6 +360,8 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7, updat
 
     Args:
         session_data: The SessionData instance for the processed session.
+        manager_id: The xxHash-64 hash-value that specifies the unique identifier of the manager process that
+            manages the log processing runtime.
         parallel_workers: The number of CPU cores (workers) to use for processing the data in parallel. Note, this
             number should not exceed the number of available log files.
         update_manifest: Determines whether to update (regenerate) the project manifest file for the processed

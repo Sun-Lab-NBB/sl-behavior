@@ -17,13 +17,14 @@ from sl_shared_assets import (
     SessionData,
     SessionTypes,
     ExperimentTrial,
-    ProcessingTracker,
+    TrackerFileNames,
     AcquisitionSystems,
     MesoscopeHardwareState,
     MesoscopeExperimentConfiguration,
+    get_processing_tracker,
+    generate_project_manifest,
 )
 from ataraxis_video_system import extract_logged_video_system_data
-from sl_shared_assets.tools import generate_project_manifest
 from ataraxis_base_utilities import LogLevel, console
 from ataraxis_communication_interface import ExtractedModuleData, extract_logged_hardware_module_data
 
@@ -1532,7 +1533,9 @@ def _process_encoder_data(log_path: Path, output_directory: Path, hardware_state
         )
 
 
-def extract_log_data(session_data: SessionData, parallel_workers: int = 7, update_manifest: bool = False) -> None:
+def extract_log_data(
+    session_data: SessionData, manager_id: int, parallel_workers: int = 7, update_manifest: bool = False
+) -> None:
     """Reads the compressed .npz log files stored in the raw_data directory of the target session and extracts all
     relevant behavior data stored in these files into the processed_data directory.
 
@@ -1542,6 +1545,8 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7, updat
 
     Args:
         session_data: The SessionData instance for the processed session.
+        manager_id: The xxHash-64 hash-value that specifies the unique identifier of the manager process that
+            manages the log processing runtime.
         parallel_workers: The number of CPU cores (workers) to use for processing the data in parallel. Note, this
             number should not exceed the number of available log files.
         update_manifest: Determines whether to update (regenerate) the project manifest file for the processed
@@ -1551,8 +1556,10 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7, updat
 
     # Instantiates the ProcessingTracker instance for behavior log processing and configures the underlying tracker file
     # to indicate that the processing is ongoing. Note, this automatically invalidates any previous processing runtimes.
-    tracker = ProcessingTracker(file_path=session_data.processed_data.behavior_processing_tracker_path)
-    tracker.start()
+    tracker = get_processing_tracker(
+        root=session_data.processed_data.processed_data_path, file_name=TrackerFileNames.BEHAVIOR
+    )
+    tracker.start(manager_id=manager_id)
 
     try:
         # Resolves the paths to the specific directories used during processing
@@ -1700,7 +1707,7 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7, updat
                         pbar.update(1)
 
                     # Configures the tracker to indicate that the processing runtime completed successfully
-                    tracker.stop()
+                    tracker.stop(manager_id=manager_id)
 
         # Aborts with an error if processing logic for the target acquisition system is not implemented
         else:
@@ -1718,7 +1725,7 @@ def extract_log_data(session_data: SessionData, parallel_workers: int = 7, updat
         # this means that the processing runtime encountered an error. Configures the tracker to indicate that this
         # runtime finished with an error to prevent deadlocking future runtime calls.
         if tracker.is_running:
-            tracker.error()
+            tracker.error(manager_id=manager_id)
 
         # If the runtime is configured to generate the project manifest file, attempts to generate and overwrite the
         # existing manifest file for the target project.

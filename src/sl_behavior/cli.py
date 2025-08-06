@@ -18,6 +18,19 @@ from .log_processing import extract_log_data
     help="The absolute path to the session whose raw behavior log data needs to be extracted into .feather files.",
 )
 @click.option(
+    "-id",
+    "--manager_id",
+    type=int,
+    required=True,
+    default=0,
+    show_default=True,
+    help=(
+        "The xxHash-64 hash value that represents the unique identifier for the process that manages this runtime. "
+        "This is primarily used when calling this CLI on remote compute servers to ensure that only a single process "
+        "can execute the CLI at a time."
+    ),
+)
+@click.option(
     "-pdr",
     "--processed_data_root",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
@@ -66,6 +79,7 @@ from .log_processing import extract_log_data
 )
 def extract_behavior_data(
     session_path: Path,
+    manager_id: int,
     processed_data_root: Path,
     legacy: bool,
     create_processed_directories: bool,
@@ -81,7 +95,7 @@ def extract_behavior_data(
     # If the processed session is a modern Sun lab session, extracts session's behavior data from multiple .npz log
     # files
     if not legacy:
-        extract_log_data(session_data=session_data, update_manifest=update_manifest)
+        extract_log_data(session_data=session_data, manager_id=manager_id, update_manifest=update_manifest)
     else:
         # Otherwise, extracts session's behavior data from the single GIMBL.json log file
-        extract_gimbl_data(session_data=session_data, update_manifest=update_manifest)
+        extract_gimbl_data(session_data=session_data, manager_id=manager_id, update_manifest=update_manifest)
