@@ -5,6 +5,7 @@ from .log_processing import extract_log_data as extract_log_data
 
 def extract_behavior_data(
     session_path: Path,
+    manager_id: int,
     processed_data_root: Path,
     legacy: bool,
     create_processed_directories: bool,

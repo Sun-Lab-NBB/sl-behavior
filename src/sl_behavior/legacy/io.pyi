@@ -34,7 +34,7 @@ def _extract_cue_changes(
         The Pandas DataFrame with columns 'time_us', 'vr_cue' and 'cue_name'.
     """
 
-def extract_gimbl_data(session_data: SessionData, update_manifest: bool = False) -> None:
+def extract_gimbl_data(session_data: SessionData, manager_id: int, update_manifest: bool = False) -> None:
     """Reads and exports the data stored in the GIMBL .JSOn file to individual .feather files.
 
     This is a service function designed to process the legacy data from the Tyche dataset. It should not be used with
@@ -43,6 +43,8 @@ def extract_gimbl_data(session_data: SessionData, update_manifest: bool = False)
 
     Args:
         session_data: The SessionData instance for the session whose legacy log data needs to be processed.
+        manager_id: The xxHash-64 hash-value that specifies the unique identifier of the manager process that
+            manages the log processing runtime.
         update_manifest: Determines whether to update (regenerate) the project manifest file for the processed
             session's project. This should always be enabled when working with remote compute server(s) to ensure that
             the project manifest file contains the most actual snapshot of the project's state.
