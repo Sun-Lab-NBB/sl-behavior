@@ -3,6 +3,7 @@ microcontrollers (hardware modules) used in the Sun lab."""
 
 from typing import Any
 from pathlib import Path
+from collections.abc import Callable
 from multiprocessing import cpu_count
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -293,10 +294,7 @@ def _interpolate_data(
 ) -> NDArray[Any]:
     """Interpolates data values for the provided seed timestamps.
 
-    Primarily, this service function is used to time-align different datastreams from the same source. For example, the
-    Valve module generates both the solenoid valve data and the auditory tone data, which is generated at non-matching
-    rates. This function is used to equalize the data sampling rate between the two data streams, allowing to output
-    the data as .feather file.
+    Primarily, this service function is used to time-align different datastreams from the same source.
 
     Notes:
         This function expects seed_timestamps and timestamps arrays to be monotonically increasing.
@@ -377,35 +375,35 @@ def _parse_encoder_data(
         cw_data = [{"timestamp": first_timestamp + 1, "data": 0}]
 
     # Precreates the output arrays, based on the number of recorded CW and CCW displacements.
-    total_length = len(ccw_data) + len(cw_data)
+    n_ccw = len(ccw_data)
+    n_cw = len(cw_data)
+    total_length = n_ccw + n_cw
     timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
     displacements: NDArray[Any] = np.empty(total_length, dtype=np.float64)
 
     # Processes CCW rotations (Code 51). CCW rotation is interpreted as positive displacement
-    n_ccw = len(ccw_data)
-    timestamps[:n_ccw] = [value["timestamp"] for value in ccw_data]  # Extracts timestamps for each value
-    # The values are initially using the uint32 type. This converts them to float64 during the initial assignment
-    displacements[:n_ccw] = [np.float64(value["data"]) for value in ccw_data]
+    timestamps[:n_ccw] = np.array([v["timestamp"] for v in ccw_data], dtype=np.uint64)
+    displacements[:n_ccw] = np.array([v["data"] for v in ccw_data], dtype=np.float64)
 
     # Processes CW rotations (Code 52). CW rotation is interpreted as negative displacement
-    timestamps[n_ccw:] = [value["timestamp"] for value in cw_data]  # CW data just fills remaining space after CCW.
-    displacements[n_ccw:] = [-np.float64(value["data"]) for value in cw_data]
+    timestamps[n_ccw:] = np.array([v["timestamp"] for v in cw_data], dtype=np.uint64)
+    displacements[n_ccw:] = -np.array([v["data"] for v in cw_data], dtype=np.float64)
 
     # Sorts both arrays based on timestamps.
     sort_indices = np.argsort(timestamps)
     timestamps = timestamps[sort_indices]
     displacements = displacements[sort_indices]
 
-    # Converts individual displacement vectors into aggregated absolute position of the mouse. The position is also
-    # translated from encoder pulse counts into centimeters. The position is referenced to the start of the
-    # experimental trial (beginning of the VR track) as 0-value. Positive positions mean moving forward along the
-    # track, negative positions mean moving backward along the track.
+    # Converts individual displacement vectors into aggregated absolute position of the animal in the task environment.
+    # The position is also translated from encoder pulse counts into centimeters. The position is referenced to the
+    # start of the experimental trial (beginning of the VR track) as 0-value. Positive positions mean moving forward
+    # along the track, negative positions mean moving backward along the track.
     # noinspection PyTypeChecker
-    positions: NDArray[Any] = np.round(np.cumsum(displacements * cm_per_pulse), decimals=8)
+    positions = np.cumsum(displacements * cm_per_pulse)
+    positions = np.round(positions, decimals=8)
 
-    # Replaces -0.0 values with 0.0. This is a convenience conversion to improve the visual appearance of numbers
-    # to users
-    positions = np.where(np.isclose(positions, -0.0) & (np.signbit(positions)), 0.0, positions)
+    # Replaces -0.0 values with 0.0. This is a convenience adjustment to improve the visual appearance of the data.
+    positions[np.isclose(positions, -0.0) & np.signbit(positions)] = 0.0
 
     # Creates a Polars DataFrame with the processed data
     module_dataframe = pl.DataFrame(
@@ -432,34 +430,30 @@ def _parse_ttl_data(extracted_module_data: ExtractedModuleData, output_file: Pat
     # Looks for event-codes 52 (InputON) and event-codes 53 (InputOFF).
 
     # Gets the data for both message types. The way the module is written guarantees that the PC receives code 53
-    # at least once. No such guarantee is made for code 52, however. We still default to empty lists for both
-    # to make this code a bit friendlier to future changes.
+    # at least once. No such guarantee is made for code 52, however.
     on_data = log_data.get(np.uint8(52), [])
     off_data = log_data.get(np.uint8(53), [])
 
-    # Since this code ultimately looks for rising edges, it will not find any unless there is at least one ON and
-    # one OFF message. Therefore, if any of the codes is actually missing, does NOT return any data. It is expected
-    # that this will be interpreted as having no ttl data during analysis.
+    # Since this function ultimately looks for rising edges, it will not find any unless there is at least one ON and
+    # one OFF message. Therefore, if any of the codes is actually missing, aborts data extraction early.
     if len(on_data) == 0 or len(off_data) == 0:
         return
 
-    # Determines the total length of the output array using the length of ON and OFF data arrays.
-    total_length = len(on_data) + len(off_data)
-
     # Precreates the storage numpy arrays for both message types. Timestamps use uint64 datatype, and the trigger
-    # values are boolean. We use uint8 as it has the same memory footprint as a boolean and allows us to use integer
-    # types across the entire dataset.
+    # values are boolean.
+    n_on = len(on_data)
+    n_off = len(off_data)
+    total_length = n_on + n_off
     timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
     triggers: NDArray[np.uint8] = np.empty(total_length, dtype=np.uint8)
 
     # Extracts ON (Code 52) trigger codes. Statically assigns the value '1' to denote ON signals.
-    n_on = len(on_data)
-    timestamps[:n_on] = [value["timestamp"] for value in on_data]
-    triggers[:n_on] = np.uint8(1)  # All code 52 signals are ON (High)
+    timestamps[:n_on] = np.array([v["timestamp"] for v in on_data], dtype=np.uint64)
+    triggers[:n_on] = 1  # All ON signals
 
     # Extracts OFF (Code 53) trigger codes.
-    timestamps[n_on:] = [value["timestamp"] for value in off_data]
-    triggers[n_on:] = np.uint8(0)  # All code 53 signals are OFF (Low)
+    timestamps[n_on:] = np.array([v["timestamp"] for v in off_data], dtype=np.uint64)
+    triggers[n_on:] = 0  # All OFF signals
 
     # Sorts both arrays based on the timestamps, so that the data is in the chronological order.
     sort_indices = np.argsort(timestamps)
@@ -516,23 +510,22 @@ def _parse_break_data(
     # Precreates the storage numpy arrays for both message types. Timestamps use uint64 datatype. Although trigger
     # values are boolean, they are translated into the actual torque applied by the break in Newton centimeters and
     # stored as float64 values.
-    total_length = len(engaged_data) + len(disengaged_data)
+    n_engaged = len(engaged_data)
+    n_disengaged = len(disengaged_data)
+    total_length = n_engaged + n_disengaged
     timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
     torques: NDArray[np.float64] = np.empty(total_length, dtype=np.float64)
 
     # Processes Engaged (code 52) triggers. When the motor is engaged, it applies the maximum possible torque to
     # the break.
-    n_engaged = len(engaged_data)
-    timestamps[:n_engaged] = [value["timestamp"] for value in engaged_data]  # Extracts timestamps for each value
-    # Since engaged strength means that the torque is delivering maximum force, uses the maximum force in N cm as
-    # the torque value for each 'engaged' state.
-    torques[:n_engaged] = [maximum_break_strength for _ in engaged_data]  # Already in rounded float 64
+    timestamps[:n_engaged] = np.array([v["timestamp"] for v in engaged_data], dtype=np.uint64)
+    torques[:n_engaged] = maximum_break_strength  # Broadcasting scalar value
 
     # Processes Disengaged (code 53) triggers. Contrary to naive expectation, the torque of a disengaged break is
     # NOT zero. Instead, it is at least the same as the minimum break strength, likely larger due to all mechanical
     # couplings in the system.
-    timestamps[n_engaged:] = [value["timestamp"] for value in disengaged_data]
-    torques[n_engaged:] = [minimum_break_strength for _ in disengaged_data]  # Already in rounded float 64
+    timestamps[n_engaged:] = np.array([v["timestamp"] for v in disengaged_data], dtype=np.uint64)
+    torques[n_engaged:] = minimum_break_strength  # Broadcasting scalar value
 
     # Sorts both arrays based on timestamps.
     sort_indices = np.argsort(timestamps)
@@ -599,7 +592,9 @@ def _parse_valve_data(
     # Precreates the storage numpy arrays for both message types. Timestamps use uint64 datatype. Although valve
     # trigger values are boolean, they are translated into the total volume of water, in microliters, dispensed to the
     # animal at each time-point and store that value as a float64.
-    total_length = len(open_data) + len(closed_data)
+    n_on = len(open_data)
+    n_off = len(closed_data)
+    total_length = n_on + n_off
     timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
     volume: NDArray[np.float64] = np.empty(total_length, dtype=np.float64)
 
@@ -609,13 +604,12 @@ def _parse_valve_data(
     # Open/Close cycle duration into the dispensed volume.
 
     # Extracts Open (Code 52) trigger codes. Statically assigns the value '1' to denote Open signals.
-    n_on = len(open_data)
-    timestamps[:n_on] = [value["timestamp"] for value in open_data]
-    volume[:n_on] = np.uint8(1)  # All code 52 signals are Open (High)
+    timestamps[:n_on] = np.array([v["timestamp"] for v in open_data], dtype=np.uint64)
+    volume[:n_on] = 1  # Open state
 
     # Extracts Closed (Code 53) trigger codes.
-    timestamps[n_on:] = [value["timestamp"] for value in closed_data]
-    volume[n_on:] = np.uint8(0)  # All code 53 signals are Closed (Low)
+    timestamps[n_on:] = np.array([v["timestamp"] for v in closed_data], dtype=np.uint64)
+    volume[n_on:] = 0  # Closed state
 
     # Sorts both arrays based on timestamps.
     sort_indices = np.argsort(timestamps)
@@ -623,8 +617,9 @@ def _parse_valve_data(
     volume = volume[sort_indices]
 
     # Find falling and rising edges. Falling edges are valve-closing events, rising edges are valve-opening events.
-    rising_edges = np.where((volume[:-1] == 0) & (volume[1:] == 1))[0] + 1
-    falling_edges = np.where((volume[:-1] == 1) & (volume[1:] == 0))[0] + 1
+    edges = np.diff(volume, prepend=volume[0])
+    rising_edges = np.where(edges == 1)[0]
+    falling_edges = np.where(edges == -1)[0]
 
     # Samples the timestamp array to only include timestamps for the falling edges. That is, when the valve has
     # finished delivering water
@@ -636,10 +631,8 @@ def _parse_valve_data(
 
     # Converts the time the Valve stayed open into the dispensed water volume, in microliters.
     # noinspection PyTypeChecker
-    volumes: NDArray[Any] = np.round(
-        np.cumsum(scale_coefficient * np.power(pulse_durations, nonlinearity_exponent)),
-        decimals=8,
-    )
+    volumes = np.cumsum(scale_coefficient * np.power(pulse_durations, nonlinearity_exponent))
+    volumes = np.round(volumes, decimals=8)
 
     # The processing logic above removes the initial water volume of 0. This re-adds the initial volume using the
     # first timestamp of the module data. That timestamp communicates the initial valve state, which should be 0.
@@ -651,18 +644,19 @@ def _parse_valve_data(
     tone_on_data = log_data.get(np.uint8(55), [])
     tone_off_data = log_data.get(np.uint8(56), [])  # The empty default is to appease mypy
 
-    tone_length = len(tone_on_data) + len(tone_off_data)
+    tone_on_n = len(tone_on_data)
+    tone_off_n = len(tone_off_data)
+    tone_length = tone_on_n + tone_off_n
     tone_timestamps: NDArray[np.uint64] = np.empty(tone_length, dtype=np.uint64)
     tone_states: NDArray[np.uint8] = np.empty(tone_length, dtype=np.uint8)
 
     # Extracts ON (Code 55) Tone codes. Statically assigns the value '1' to denote On signals.
-    tone_on_n = len(tone_on_data)
-    tone_timestamps[:tone_on_n] = [value["timestamp"] for value in tone_on_data]
-    tone_states[:tone_on_n] = np.uint8(1)  # All code 55 signals are On (High)
+    tone_timestamps[:tone_on_n] = np.array([v["timestamp"] for v in tone_on_data], dtype=np.uint64)
+    tone_states[:tone_on_n] = 1
 
     # Extracts Closed (Code 53) trigger codes.
-    tone_timestamps[tone_on_n:] = [value["timestamp"] for value in tone_off_data]
-    tone_states[tone_on_n:] = np.uint8(0)  # All code 56 signals are Off (Low)
+    tone_timestamps[tone_on_n:] = np.array([v["timestamp"] for v in tone_off_data], dtype=np.uint64)
+    tone_states[tone_on_n:] = 0
 
     # Sorts both arrays based on timestamps.
     sort_indices = np.argsort(tone_timestamps)
@@ -675,11 +669,9 @@ def _parse_valve_data(
         tone_timestamps = np.append(tone_timestamps, tone_timestamps[-1] + 1)
         tone_states = np.append(tone_states, 0)
 
-    # Constructs a shared array that includes all reward and tone timestamps. This will be used to interpolate tone
+    # Constructs a shared array that includes all reward and tone timestamps. This is used to interpolate tone
     # and timestamp values. Sorts the generated array to arrange all timestamps in monotonically ascending order
-    shared_stamps = np.concatenate([tone_timestamps, reward_timestamps])
-    sort_indices = np.argsort(shared_stamps)
-    shared_stamps = shared_stamps[sort_indices]
+    shared_stamps = np.unique(np.concatenate([tone_timestamps, reward_timestamps]))
 
     # Interpolates the reward volumes for each tone state and tone states for each reward volume.
     out_reward = _interpolate_data(
@@ -712,7 +704,7 @@ def _parse_lick_data(extracted_module_data: ExtractedModuleData, output_file: Pa
         lick_threshold: The voltage threshold for detecting the interaction with the sensor as a lick.
 
     Notes:
-        The extraction classifies lick events based on the lick threshold used by the class during runtime. The
+        The extraction classifies lick events based on the lick threshold used during runtime. The
         time-difference between consecutive ON and OFF event edges corresponds to the time, in microseconds, the
         tongue maintained contact with the lick tube. This may include both the time the tongue physically
         touched the tube and the time there was a conductive fluid bridge between the tongue and the lick tube.
@@ -730,16 +722,11 @@ def _parse_lick_data(extracted_module_data: ExtractedModuleData, output_file: Pa
     # Unlike the other parsing methods, this one will always work as expected since it only deals with one code and
     # that code is guaranteed to be received for each runtime.
 
-    # Precreates the storage numpy arrays for both message types. Timestamps use uint64 datatype. Lick sensor
+    # Extract timestamps and voltage levels. Timestamps use uint64 datatype. Lick sensor
     # voltage levels come in as uint16, but they are later used to generate a binary uint8 lick classification mask.
     voltage_data = log_data[np.uint8(51)]
-    total_length = len(voltage_data)
-    timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
-    voltages: NDArray[np.uint16] = np.empty(total_length, dtype=np.uint16)
-
-    # Extract timestamps and voltage levels
-    timestamps[:] = [value["timestamp"] for value in voltage_data]
-    voltages[:] = [value["data"] for value in voltage_data]
+    timestamps = np.array([v["timestamp"] for v in voltage_data], dtype=np.uint64)
+    voltages = np.array([v["data"] for v in voltage_data], dtype=np.uint16)
 
     # Sorts all arrays by timestamp. This is technically not needed as the extracted values are already sorted by
     # timestamp, but this is still done for additional safety.
@@ -748,7 +735,7 @@ def _parse_lick_data(extracted_module_data: ExtractedModuleData, output_file: Pa
     voltages = voltages[sort_indices]
 
     # Creates a lick binary classification column based on the class threshold. Note, the threshold is inclusive.
-    licks = np.where(voltages >= lick_threshold, np.uint8(1), np.uint8(0))
+    licks = (voltages >= lick_threshold).astype(np.uint8)
 
     # Creates a Polars DataFrame with the processed data
     module_dataframe = pl.DataFrame(
@@ -807,20 +794,22 @@ def _parse_torque_data(
     # Precreates the storage numpy arrays for both message types. Timestamps use uint64 datatype. Although torque
     # values are uint16, they are translated into the actual torque applied by the animal in Newton centimeters and
     # store them as float 64 values.
-    total_length = len(ccw_data) + len(cw_data)
+    n_ccw = len(ccw_data)
+    n_cw = len(cw_data)
+    total_length = n_ccw + n_cw
     timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
-    torques: NDArray[np.float64] = np.empty(total_length, dtype=np.float64)
 
     # Processes CCW torques (Code 51). CCW torque is interpreted as positive torque
-    n_ccw = len(ccw_data)
-    timestamps[:n_ccw] = [value["timestamp"] for value in ccw_data]  # Extracts timestamps for each value
-    # The values are initially using the uint16 type. This converts them to float64 and translates from raw ADC
-    # units into Newton centimeters.
-    torques[:n_ccw] = [np.round(np.float64(value["data"]) * torque_per_adc_unit, decimals=8) for value in ccw_data]
+    timestamps[:n_ccw] = np.array([v["timestamp"] for v in ccw_data], dtype=np.uint64)
+    ccw_values = np.array([v["data"] for v in ccw_data], dtype=np.float64) * torque_per_adc_unit
 
     # Processes CW torques (Code 52). CW torque is interpreted as negative torque
-    timestamps[n_ccw:] = [value["timestamp"] for value in cw_data]  # CW data just fills remaining space after CCW.
-    torques[n_ccw:] = [np.round(-np.float64(value["data"]) * torque_per_adc_unit, decimals=8) for value in cw_data]
+    timestamps[n_ccw:] = np.array([v["timestamp"] for v in cw_data], dtype=np.uint64)
+    cw_values = -np.array([v["data"] for v in cw_data], dtype=np.float64) * torque_per_adc_unit
+
+    # Combine torques into a unified time-based array
+    torques = np.concatenate([ccw_values, cw_values])
+    torques = np.round(torques, decimals=8)
 
     # Sorts both arrays based on timestamps.
     sort_indices = np.argsort(timestamps)
@@ -833,9 +822,8 @@ def _parse_torque_data(
         timestamps = np.append(timestamps, timestamps[-1] + 1)
         torques = np.append(torques, 0)
 
-    # Replaces -0.0 values with 0.0. This is a convenience conversion to improve the visual appearance of numbers
-    # to users
-    torques = np.where(np.isclose(torques, -0.0) & (np.signbit(torques)), 0.0, torques)
+    # Replaces -0.0 values with 0.0. This is a convenience conversion used to improve the visual appearance of the data.
+    torques[np.isclose(torques, -0.0) & np.signbit(torques)] = 0.0
 
     # Creates a Polars DataFrame with the processed data
     module_dataframe = pl.DataFrame(
@@ -884,20 +872,20 @@ def _parse_screen_data(extracted_module_data: ExtractedModuleData, output_file: 
         return
 
     # Precreates the storage numpy arrays for both message types. Timestamps use uint64 datatype, and the trigger
-    # values are boolean. We use uint8 as it has the same memory footprint as a boolean and allows us to use integer
-    # types across the entire dataset.
-    total_length = len(on_data) + len(off_data)
+    # values are boolean.
+    n_on = len(on_data)
+    n_off = len(off_data)
+    total_length = n_on + n_off
     timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
     triggers: NDArray[np.uint8] = np.empty(total_length, dtype=np.uint8)
 
     # Extracts ON (Code 52) trigger codes. Statically assigns the value '1' to denote ON signals.
-    n_on = len(on_data)
-    timestamps[:n_on] = [value["timestamp"] for value in on_data]
-    triggers[:n_on] = np.uint8(1)  # All code 52 signals are ON (High)
+    timestamps[:n_on] = np.array([v["timestamp"] for v in on_data], dtype=np.uint64)
+    triggers[:n_on] = 1
 
     # Extracts OFF (Code 53) trigger codes.
-    timestamps[n_on:] = [value["timestamp"] for value in off_data]
-    triggers[n_on:] = np.uint8(0)  # All code 53 signals are OFF (Low)
+    timestamps[n_on:] = np.array([v["timestamp"] for v in off_data], dtype=np.uint64)
+    triggers[n_on:] = 0
 
     # Sorts both arrays based on the timestamps, so that the data is in the chronological order.
     sort_indices = np.argsort(timestamps)
@@ -906,7 +894,8 @@ def _parse_screen_data(extracted_module_data: ExtractedModuleData, output_file: 
 
     # Finds rising edges (where the signal goes from 0 to 1). Then uses the indices for such events to extract the
     # timestamps associated with each rising edge, before returning them to the caller.
-    rising_edges = np.where((triggers[:-1] == 0) & (triggers[1:] == 1))[0] + 1
+    edges = np.diff(triggers, prepend=0)
+    rising_edges = np.where(edges == 1)[0]
     screen_timestamps = timestamps[rising_edges]
 
     # Adds the initial state of the screen using the first recorded timestamp. The module is configured to send the
@@ -916,10 +905,11 @@ def _parse_screen_data(extracted_module_data: ExtractedModuleData, output_file: 
 
     # Builds an array of screen states. Starts with the initial screen state and then flips the state for each
     # consecutive timestamp matching a rising edge of the toggle pulse.
-    screen_states = np.zeros(len(screen_timestamps), dtype=np.uint8)
+    n_states = len(screen_timestamps)
+    screen_states = np.empty(n_states, dtype=np.uint8)
     screen_states[0] = initially_on
-    for i in range(1, len(screen_states)):
-        screen_states[i] = 1 - screen_states[i - 1]  # Flips between 0 and 1
+    if n_states > 1:
+        screen_states[1:] = (initially_on + np.arange(1, n_states)) % 2
 
     # Creates a Polars DataFrame with the processed data
     module_dataframe = pl.DataFrame(
@@ -933,11 +923,39 @@ def _parse_screen_data(extracted_module_data: ExtractedModuleData, output_file: 
     module_dataframe.write_ipc(file=output_file, compression="uncompressed")
 
 
+def _parse_module_data(
+        parse_func: Callable,
+        extracted_data: ExtractedModuleData | None,
+        output_file: Path,
+        **kwargs
+) -> Exception | None:
+    """Runs a hardware module data parsing function with error handling.
+
+    This helper function is used to parse hardware module data in parallel.
+
+    Args:
+        parse_func: The parsing function to execute.
+        extracted_data: The extracted module data to parse.
+        output_file: The output file path.
+        **kwargs: Additional arguments for the parsing function.
+
+    Returns:
+        None if successful, Exception if an error occurs during runtime.
+    """
+    if extracted_data is None:
+        return None
+    try:
+        parse_func(extracted_data, output_file, **kwargs)
+        return None
+    except Exception as e:
+        return e
+
+
 def _extract_mesoscope_vr_actor_data(
     log_path: Path, output_directory: Path, hardware_state: MesoscopeHardwareState, workers: int
 ) -> None:
-    """Extracts the data logged by the Actor microcontroller modules used during Mesoscope-VR acquisition system
-    runtime and saves it as multiple .feather files.
+    """Extracts the data logged by the Actor microcontroller hardware modules used during Mesoscope-VR acquisition
+    system runtime and saves it as multiple .feather files.
 
     Args:
         log_path: The path to the .npz archive containing the Actor microcontroller data to parse.
@@ -951,12 +969,21 @@ def _extract_mesoscope_vr_actor_data(
     # Resolves the modules for which to extract the data. Not all runtimes use all the modules supported by the AMC.
     module_type_id = []  # Determines the data to parse
     data_indices: list[int | None] = []  # Tracks the index under which module's data is returned
+    parse_tasks = []  # Stores parsing tasks to execute in parallel
 
     # Break
     index = 0
     if hardware_state.minimum_break_strength is not None and hardware_state.maximum_break_strength is not None:
         module_type_id.append((3, 1))
         data_indices.append(index)
+        parse_tasks.append({
+            'func': _parse_break_data,
+            'output': output_directory.joinpath("break_data.feather"),
+            'kwargs': {
+                'minimum_break_strength': np.float64(hardware_state.minimum_break_strength),
+                'maximum_break_strength': np.float64(hardware_state.maximum_break_strength),
+            }
+        })
         index += 1
     else:
         data_indices.append(None)
@@ -965,6 +992,14 @@ def _extract_mesoscope_vr_actor_data(
     if hardware_state.valve_nonlinearity_exponent is not None and hardware_state.valve_scale_coefficient is not None:
         module_type_id.append((5, 1))
         data_indices.append(index)
+        parse_tasks.append({
+            'func': _parse_valve_data,
+            'output': output_directory.joinpath("valve_data.feather"),
+            'kwargs': {
+                'scale_coefficient': np.float64(hardware_state.valve_scale_coefficient),
+                'nonlinearity_exponent': np.float64(hardware_state.valve_nonlinearity_exponent),
+            }
+        })
         index += 1
     else:
         data_indices.append(None)
@@ -973,6 +1008,13 @@ def _extract_mesoscope_vr_actor_data(
     if hardware_state.screens_initially_on is not None:
         module_type_id.append((7, 1))
         data_indices.append(index)
+        parse_tasks.append({
+            'func': _parse_screen_data,
+            'output': output_directory.joinpath("screen_data.feather"),
+            'kwargs': {
+                'initially_on': hardware_state.screens_initially_on,
+            }
+        })
         index += 1
     else:
         data_indices.append(None)
@@ -981,39 +1023,42 @@ def _extract_mesoscope_vr_actor_data(
     if set(data_indices) == {None}:
         return
 
-    # Returns the data in the same order as the input module type_ids.
+    # Extracts the data for the requested hardware modules from the log file.
     log_data_tuple = _extract_logged_hardware_module_data(
         log_path=log_path, module_type_id=tuple(module_type_id), n_workers=workers
     )
 
-    # Since the most time-consuming step is reading the compressed data log, the time loss due to executing the
-    # parsing steps sequentially is negligible.
+    # Depending on configuration, executes the parsing tasks in-parallel or sequentially.
+    if workers == 1 or len(parse_tasks) == 1:
+        # Sequential execution
+        for i, task in enumerate(parse_tasks):
+            idx = [d for d in data_indices if d is not None][i]
+            task['func'](
+                extracted_module_data=log_data_tuple[idx],
+                output_file=task['output'],
+                **task['kwargs']
+            )
+    else:
+        # Parallel execution
+        n_workers = workers if workers > 0 else None  # None uses all available cores
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = []
+            for i, task in enumerate(parse_tasks):
+                idx = [d for d in data_indices if d is not None][i]
+                future = executor.submit(
+                    _parse_module_data,
+                    task['func'],
+                    log_data_tuple[idx],
+                    task['output'],
+                    **task['kwargs']
+                )
+                futures.append(future)
 
-    # Break
-    if data_indices[0] is not None:
-        _parse_break_data(
-            extracted_module_data=log_data_tuple[data_indices[0]],
-            output_file=output_directory.joinpath("break_data.feather"),
-            minimum_break_strength=np.float64(hardware_state.minimum_break_strength),
-            maximum_break_strength=np.float64(hardware_state.maximum_break_strength),
-        )
-
-    # Valve
-    if data_indices[1] is not None:
-        _parse_valve_data(
-            extracted_module_data=log_data_tuple[data_indices[1]],
-            output_file=output_directory.joinpath("valve_data.feather"),
-            scale_coefficient=np.float64(hardware_state.valve_scale_coefficient),
-            nonlinearity_exponent=np.float64(hardware_state.valve_nonlinearity_exponent),
-        )
-
-    # Screens
-    if data_indices[2] is not None:
-        _parse_screen_data(
-            extracted_module_data=log_data_tuple[data_indices[2]],
-            output_file=output_directory.joinpath("screen_data.feather"),
-            initially_on=hardware_state.screens_initially_on,  # type: ignore
-        )
+            # Waits for all parsing tasks to complete and check for errors
+            for future in as_completed(futures):
+                error = future.result()
+                if error is not None:
+                    raise error
 
 
 def _extract_mesoscope_vr_sensor_data(
@@ -1034,12 +1079,20 @@ def _extract_mesoscope_vr_sensor_data(
     # Resolves the modules for which to extract the data
     module_type_id = []  # Determines the data to parse
     data_indices: list[int | None] = []  # Tracks the index under which module's data is returned
+    parse_tasks = []  # Stores parsing tasks to execute in parallel
 
     # Lick Sensor
     index = 0
     if hardware_state.lick_threshold is not None:
         module_type_id.append((4, 1))
         data_indices.append(index)
+        parse_tasks.append({
+            'func': _parse_lick_data,
+            'output': output_directory.joinpath("lick_data.feather"),
+            'kwargs': {
+                'lick_threshold': np.uint16(hardware_state.lick_threshold),
+            }
+        })
         index += 1
     else:
         data_indices.append(None)
@@ -1048,6 +1101,13 @@ def _extract_mesoscope_vr_sensor_data(
     if hardware_state.torque_per_adc_unit is not None:
         module_type_id.append((6, 1))
         data_indices.append(index)
+        parse_tasks.append({
+            'func': _parse_torque_data,
+            'output': output_directory.joinpath("torque_data.feather"),
+            'kwargs': {
+                'torque_per_adc_unit': np.float64(hardware_state.torque_per_adc_unit),
+            }
+        })
         index += 1
     else:
         data_indices.append(None)
@@ -1056,6 +1116,11 @@ def _extract_mesoscope_vr_sensor_data(
     if hardware_state.recorded_mesoscope_ttl:
         module_type_id.append((1, 1))
         data_indices.append(index)
+        parse_tasks.append({
+            'func': _parse_ttl_data,
+            'output': output_directory.joinpath("mesoscope_frame_data.feather"),
+            'kwargs': {}
+        })
         index += 1
     else:
         data_indices.append(None)
@@ -1064,34 +1129,42 @@ def _extract_mesoscope_vr_sensor_data(
     if set(data_indices) == {None}:
         return
 
-    # Extract all module data at once
+    # Extracts the data for all requested modules in parallel
     log_data_tuple = _extract_logged_hardware_module_data(
         log_path=log_path, module_type_id=tuple(module_type_id), n_workers=workers
     )
 
-    # Parse each module's data
-    # Lick Sensor
-    if data_indices[0] is not None:
-        _parse_lick_data(
-            extracted_module_data=log_data_tuple[data_indices[0]],
-            output_file=output_directory.joinpath("lick_data.feather"),
-            lick_threshold=np.uint16(hardware_state.lick_threshold),  # type: ignore
-        )
+    # Execute module data parsing tasks in parallel
+    if workers == 1 or len(parse_tasks) == 1:
+        # Sequential execution
+        for i, task in enumerate(parse_tasks):
+            idx = [d for d in data_indices if d is not None][i]
+            task['func'](
+                extracted_module_data=log_data_tuple[idx],
+                output_file=task['output'],
+                **task['kwargs']
+            )
+    else:
+        # Parallel execution
+        n_workers = workers if workers > 0 else None  # None uses all available cores
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = []
+            for i, task in enumerate(parse_tasks):
+                idx = [d for d in data_indices if d is not None][i]
+                future = executor.submit(
+                    _parse_module_data,
+                    task['func'],
+                    log_data_tuple[idx],
+                    task['output'],
+                    **task['kwargs']
+                )
+                futures.append(future)
 
-    # Torque Sensor
-    if data_indices[1] is not None:
-        _parse_torque_data(
-            extracted_module_data=log_data_tuple[data_indices[1]],
-            output_file=output_directory.joinpath("torque_data.feather"),
-            torque_per_adc_unit=np.float64(hardware_state.torque_per_adc_unit),
-        )
-
-    # Mesoscope Frame TTL module
-    if data_indices[2] is not None:
-        _parse_ttl_data(
-            extracted_module_data=log_data_tuple[data_indices[2]],
-            output_file=output_directory.joinpath("mesoscope_frame_data.feather"),
-        )
+            # Waits for all parsing tasks to complete and check for errors
+            for future in as_completed(futures):
+                error = future.result()
+                if error is not None:
+                    raise error
 
 
 def _extract_mesoscope_vr_encoder_data(
@@ -1112,12 +1185,20 @@ def _extract_mesoscope_vr_encoder_data(
     # Resolves the module for which to extract the data
     module_type_id = []  # Determines the data to parse
     data_indices: list[int | None] = []  # Tracks the index under which module's data is returned
+    parse_tasks = []  # Stores parsing tasks to execute in parallel
 
     # Encoder
     index = 0
     if hardware_state.cm_per_pulse is not None:
         module_type_id.append((2, 1))
         data_indices.append(index)
+        parse_tasks.append({
+            'func': _parse_encoder_data,
+            'output': output_directory.joinpath("encoder_data.feather"),
+            'kwargs': {
+                'cm_per_pulse': np.float64(hardware_state.cm_per_pulse),
+            }
+        })
         index += 1
     else:
         data_indices.append(None)
@@ -1126,18 +1207,41 @@ def _extract_mesoscope_vr_encoder_data(
     if set(data_indices) == {None}:
         return
 
-    # Extract module data
+    # Extracts module data in parallel
     log_data_tuple = _extract_logged_hardware_module_data(
         log_path=log_path, module_type_id=tuple(module_type_id), n_workers=workers
     )
 
-    # Parse encoder data
-    if data_indices[0] is not None:
-        _parse_encoder_data(
-            extracted_module_data=log_data_tuple[data_indices[0]],
-            output_file=output_directory.joinpath("encoder_data.feather"),
-            cm_per_pulse=np.float64(hardware_state.cm_per_pulse),
-        )
+    # Parses extracted module data in parallel
+    if workers == 1 or len(parse_tasks) == 1:
+        # Sequential execution
+        for i, task in enumerate(parse_tasks):
+            idx = [d for d in data_indices if d is not None][i]
+            task['func'](
+                extracted_module_data=log_data_tuple[idx],
+                output_file=task['output'],
+                **task['kwargs']
+            )
+    else:
+        n_workers = workers if workers > 0 else None
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = []
+            for i, task in enumerate(parse_tasks):
+                idx = [d for d in data_indices if d is not None][i]
+                future = executor.submit(
+                    _parse_module_data,
+                    task['func'],
+                    log_data_tuple[idx],
+                    task['output'],
+                    **task['kwargs']
+                )
+                futures.append(future)
+
+            # Waits for completion and check for errors
+            for future in as_completed(futures):
+                error = future.result()
+                if error is not None:
+                    raise error
 
 
 def process_microcontroller_data(
