@@ -5,6 +5,7 @@ from pathlib import Path
 from multiprocessing import cpu_count
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+from tqdm import tqdm
 from numba import njit, prange  # type: ignore
 import numpy as np
 import polars as pl
@@ -18,7 +19,7 @@ from sl_shared_assets import (
     AcquisitionSystems,
     generate_project_manifest,
 )
-from ataraxis_base_utilities import console, chunk_iterable
+from ataraxis_base_utilities import LogLevel, console, chunk_iterable
 
 # Defines session types and acquisition systems that support extracting video camera frames.
 _supported_systems = {AcquisitionSystems.MESOSCOPE_VR}
@@ -157,10 +158,12 @@ def _extract_camera_timestamps(
 
         # Collects results while maintaining frame order. This also propagates processing errors to the caller process.
         results: list[list[np.uint64] | None] = [None] * len(batches)
-        completed = 0
-        for future in as_completed(future_to_index):
-            results[future_to_index[future]] = future.result()
-            completed += 1
+
+        # Creates a progress bar for batch processing
+        with tqdm(total=len(batches), desc="Extracting camera frame timestamps", unit="batch") as pbar:
+            for future in as_completed(future_to_index):
+                results[future_to_index[future]] = future.result()
+                pbar.update(1)  # Updates the progress bar after each batch completes
 
     # Combines processing results in order
     all_timestamps: list[np.uint64] = []
@@ -177,6 +180,7 @@ def process_camera_timestamps(
     log_id: int,
     manager_id: int,
     job_count: int,
+    reset_tracker: bool = False,
     processed_data_root: Path | None = None,
     workers: int = -1,
 ) -> None:
@@ -192,6 +196,8 @@ def process_camera_timestamps(
         manager_id: The unique identifier of the manager process that manages the log processing runtime.
         job_count: The total number of jobs executed as part of the behavior processing pipeline that calls this
             function.
+        reset_tracker: Determines whether to reset the tracker file before executing the runtime. This allows
+            recovering from deadlocked runtimes, but otherwise should not be used to ensure runtime safety.
         processed_data_root: The absolute path to the directory where processed data from all projects is stored, if
             different from the root directory provided as part of the 'session_path' argument.
         workers: The number of worker processes to use for extracting the camera frame timestamps in parallel. Setting
@@ -205,52 +211,60 @@ def process_camera_timestamps(
     # Resolves the path to the processed log file
     log_path = session.source_data.behavior_data_path.joinpath(f"{log_id}_log.npz")
 
-    # Mesoscope-VR system
-    output_path = Path()
-    if session.acquisition_system == AcquisitionSystems.MESOSCOPE_VR:
-        # Ensures that the processed session supports this type of processing.
-        if session.session_type not in _supported_sessions:
-            message = (
-                f"Unable to extract the video camera frame timestamps from the '{log_id}' log file of the session "
-                f"'{session.session_name}'. The processed session has an unsupported session type "
-                f"'{session.session_type}'. Currently, only the following Mesoscope-VR-acquired session types are "
-                f"supported: {', '.join(_supported_sessions)}."
-            )
-            console.error(message=message, error=NotImplementedError)
-
-        # Statically maps processed log IDs to human-readable output file names and resolves the output .feather file
-        # path
-        if log_id == 51:
-            output_path = session.processed_data.camera_data_path.joinpath("face_camera_timestamps.feather")
-        elif log_id == 62:
-            output_path = session.processed_data.camera_data_path.joinpath("left_camera_timestamps.feather")
-        elif log_id == 73:
-            output_path = session.processed_data.camera_data_path.joinpath("right_camera_timestamps.feather")
-        else:
-            message = (
-                f"Unable to extract the video camera frame timestamps from the '{log_id}' log file of the session "
-                f"'{session.session_name}'. Encountered an unknown video camera log ID. Currently, the Mesoscope-VR "
-                f"system is expected to use the following log IDs: 51 (face camera), 62 (left camera), and 73 "
-                f"(right camera)."
-            )
-            console.error(message=message, error=ValueError)
-    else:
-        message = (
-            f"Unable to extract the video camera frame timestamps from the '{log_id}' log file of the session "
-            f"'{session.session_name}'. The processed session was acquired using an unsupported data acquisition "
-            f"system '{session.acquisition_system}'. Currently, only the following acquisition systems are "
-            f"supported: {', '.join(_supported_sessions)}."
-        )
-        console.error(message=message, error=NotImplementedError)
-
     # Ensures that runtime's manager process has exclusive access to the processed session's data
     lock = SessionLock(file_path=session.tracking_data.session_lock_path)
     lock.check_owner(manager_id=manager_id)
 
-    # Extracts the video camera frame timestamps from the target log file
+    # Initializes the processing tracker for this pipeline.
     tracker = ProcessingTracker(file_path=session.tracking_data.tracking_data_path.joinpath(TrackerFileNames.BEHAVIOR))
+
+    # If requested, resets the processing tracker to the default state before running the processing
+    if reset_tracker:
+        tracker.abort()
+
+    # Extracts the video camera frame timestamps from the target log file
     tracker.start(manager_id=manager_id, job_count=job_count)
     try:
+        # Mesoscope-VR system
+        output_path = Path()
+        if session.acquisition_system == AcquisitionSystems.MESOSCOPE_VR:
+            # Ensures that the processed session supports this type of processing.
+            if session.session_type not in _supported_sessions:
+                message = (
+                    f"Unable to extract the video camera frame timestamps from the '{log_id}' log file of the session "
+                    f"'{session.session_name}'. The processed session has an unsupported session type "
+                    f"'{session.session_type}'. Currently, only the following Mesoscope-VR-acquired session types are "
+                    f"supported: {', '.join(_supported_sessions)}."
+                )
+                console.error(message=message, error=NotImplementedError)
+
+            # Statically maps processed log IDs to human-readable output file names and resolves the output .feather
+            # file path
+            if log_id == 51:
+                output_path = session.processed_data.camera_data_path.joinpath("face_camera_timestamps.feather")
+            elif log_id == 62:
+                output_path = session.processed_data.camera_data_path.joinpath("left_camera_timestamps.feather")
+            elif log_id == 73:
+                output_path = session.processed_data.camera_data_path.joinpath("right_camera_timestamps.feather")
+            else:
+                message = (
+                    f"Unable to extract the video camera frame timestamps from the '{log_id}' log file of the session "
+                    f"'{session.session_name}'. Encountered an unknown video camera log ID. Currently, the "
+                    f"Mesoscope-VR system is expected to use the following log IDs: 51 (face camera), "
+                    f"62 (left camera), and 73 (right camera)."
+                )
+                console.error(message=message, error=ValueError)
+        else:
+            message = (
+                f"Unable to extract the video camera frame timestamps from the '{log_id}' log file of the session "
+                f"'{session.session_name}'. The processed session was acquired using an unsupported data acquisition "
+                f"system '{session.acquisition_system}'. Currently, only the following acquisition systems are "
+                f"supported: {', '.join(_supported_sessions)}."
+            )
+            console.error(message=message, error=NotImplementedError)
+
+        console.echo(f"Extracting video camera frame timestamps from '{log_id}' log file...")
+
         # Extracts timestamp data from log archive
         timestamp_data = _extract_camera_timestamps(log_path=log_path, n_workers=workers)
 
@@ -263,6 +277,8 @@ def process_camera_timestamps(
 
         # Configures the tracker to indicate that the processing was completed successfully.
         tracker.stop(manager_id=manager_id)
+
+        console.echo(f"Camera frame timestamp processing: Complete.", level=LogLevel.SUCCESS)
 
     # If the runtime encounters an error, configures the tracker to indicate that the processing was interrupted.
     except Exception:

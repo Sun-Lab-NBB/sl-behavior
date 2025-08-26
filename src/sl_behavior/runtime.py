@@ -665,6 +665,7 @@ def process_runtime_data(
     session_path: Path,
     manager_id: int,
     job_count: int,
+    reset_tracker: bool = False,
     processed_data_root: Path | None = None,
 ) -> None:
     """Reads the target session's data acquisition system .npz log file and extracts acquisition system and runtime
@@ -681,6 +682,8 @@ def process_runtime_data(
         manager_id: The unique identifier of the manager process that manages the log processing runtime.
         job_count: The total number of jobs executed as part of the behavior processing pipeline that calls this
             function.
+        reset_tracker: Determines whether to reset the tracker file before executing the runtime. This allows
+            recovering from deadlocked runtimes, but otherwise should not be used to ensure runtime safety.
         processed_data_root: The absolute path to the directory where processed data from all projects is stored, if
             different from the root directory provided as part of the 'session_path' argument.
     """
@@ -696,8 +699,14 @@ def process_runtime_data(
     lock = SessionLock(file_path=session.tracking_data.session_lock_path)
     lock.check_owner(manager_id=manager_id)
 
-    # Extracts the acquisition system data from the target log file
+    # Initializes the processing tracker for this pipeline.
     tracker = ProcessingTracker(file_path=session.tracking_data.tracking_data_path.joinpath(TrackerFileNames.BEHAVIOR))
+
+    # If requested, resets the processing tracker to the default state before running the processing
+    if reset_tracker:
+        tracker.abort()
+
+    # Extracts the acquisition system data from the target log file
     tracker.start(manager_id=manager_id, job_count=job_count)
     try:
         # Mesoscope-VR system
@@ -719,12 +728,17 @@ def process_runtime_data(
                     session.source_data.experiment_configuration_path
                 )
 
+            console.echo(f"Extracting runtime data from the '1' log file...")
+
             # Extracts the runtime data
             _extract_mesoscope_vr_data(
                 log_path=log_path,
                 experiment_configuration=experiment_configuration,
                 output_directory=session.processed_data.behavior_data_path,
             )
+
+            tracker.stop(manager_id=manager_id)
+            console.echo(f"Runtime data processing: Complete.", level=LogLevel.SUCCESS)
 
         else:
             error_message = (

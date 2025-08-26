@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 # Project metdata section. Provides the genral ID information about the project.
 [project]
 name = "sl-behavior"
-version = "4.0.0"
+version = "4.0.0rc1"
 description = "Provides tools for processing non-visual behavior data acquired in the Sun (NeuroAI) lab."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -75,9 +75,9 @@ dev = [
     "scipy-stubs>=1,<2",
 ]
 
-# Exports CLIs for processing behavior data
+# Exports the CLI for processing behavior data
 [project.scripts]
-sl-process-behavior = "sl_behavior.cli:extract_behavior_data"
+sl-behavior = "sl_behavior.cli:behavior"
 
 # Specifies files that should not be included in the source-code distribution but are also not part of gitignore.
 [tool.hatch.build.targets.sdist]
