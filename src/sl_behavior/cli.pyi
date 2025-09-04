@@ -20,7 +20,7 @@ def behavior(
     log_id: int,
     reset_tracker: bool,
 ) -> None:
-    """This Command-Line Interface (CLI) group allows processing behavior data acquired the Sun lab.
+    """This Command-Line Interface (CLI) group allows processing behavior data acquired in the Sun lab.
 
     This CLI group is intended to run on the Sun lab remote compute server(s) and should not be called by the end-user
     directly. Instead, commands from this CLI are designed to be accessed through the bindings in the sl-forgery
