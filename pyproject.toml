@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 # Project metdata section. Provides the genral ID information about the project.
 [project]
 name = "sl-behavior"
-version = "4.0.0rc2"
+version = "4.0.0rc3"
 description = "Provides tools for processing non-visual behavior data acquired in the Sun (NeuroAI) lab."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -49,7 +49,7 @@ dependencies = [
     "tqdm>=4,<5",
     "polars>=1,<2",
     "pyarrow>=21,<22",
-    "sl-shared-assets==6.0.0rc1",
+    "sl-shared-assets==6.0.0rc2",
 ]
 
 [project.urls]
