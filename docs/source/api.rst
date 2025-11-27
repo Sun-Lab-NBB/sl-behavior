@@ -4,25 +4,27 @@
 Command Line Interfaces
 =======================
 
-.. automodule:: sl_behavior.cli
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-.. click:: sl_behavior.cli:extract_behavior_data
-   :prog: sl-crc
+.. click:: sl_behavior.cli:behavior
+   :prog: sl-behavior
    :nested: full
 
-Modern Log Processing
-=====================
-.. automodule:: sl_behavior.log_processing
+Camera Data Processing
+======================
+.. automodule:: sl_behavior.camera
    :members:
    :undoc-members:
    :show-inheritance:
 
-Legacy Log Processing
-=====================
-.. automodule:: sl_behavior.legacy
+Runtime Data Processing
+=======================
+.. automodule:: sl_behavior.runtime
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+MicroController Data Processing
+===============================
+.. automodule:: sl_behavior.microcontrollers
    :members:
    :undoc-members:
    :show-inheritance:
