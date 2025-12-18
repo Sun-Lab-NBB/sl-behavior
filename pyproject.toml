@@ -6,11 +6,11 @@ build-backend = "hatchling.build"
 # Project metdata section. Provides the genral ID information about the project.
 [project]
 name = "sl-behavior"
-version = "4.0.0rc3"
+version = "4.0.0rc4"
 description = "Provides tools for processing non-visual behavior data acquired in the Sun (NeuroAI) lab."
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.13, <3.14"
+requires-python = ">=3.14,<3.15"
 authors = [
     {name = "Ivan Kondratyev"},
     {name = "Kushaan Gupta"},
@@ -31,9 +31,9 @@ classifiers = [
     # License
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     # Supported Python Versions
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     # Supported OS systems
-    "Operating System :: POSIX :: Linux",
+    "Operating System :: OS Independent",
     # Typing
     "Typing :: Typed"
 ]
@@ -42,14 +42,15 @@ classifiers = [
 dependencies = [
     "click>=8,<9",
     "numpy>=2,<3",
-    "numba>=0,<1",
-    "intel-cmplr-lib-rt>=2025,<2026; platform_machine == 'x86_64'",
-    "ataraxis-base-utilities>=3,<4",
-    "ataraxis-communication-interface>=3,<4",
+    "numba>=0.63,<1",
+    "intel-cmplr-lib-rt>=2025,<2026; sys_platform != 'darwin'",
+    "ataraxis-base-utilities>=5,<6",
+    "ataraxis-video-system>=2,<3",
+    "ataraxis-communication-interface>=4,<5",
     "tqdm>=4,<5",
     "polars>=1,<2",
-    "pyarrow>=21,<22",
-    "sl-shared-assets==6.0.0rc2",
+    "pyarrow>=22,<23",
+    "sl-shared-assets>=6.1.0",
 ]
 
 [project.urls]
@@ -67,12 +68,10 @@ dev = [
     "tox-uv>=1,<2",
 
     # Development Automation
-    "ataraxis-automation>=6.0.1,<7",
+    "ataraxis-automation>=7,<8",
 
-    # Types:
+    # Types
     "types-tqdm>=4,<5",
-    "pandas-stubs>=2,<3",
-    "scipy-stubs>=1,<2",
 ]
 
 # Exports the CLI for processing behavior data
@@ -91,7 +90,7 @@ packages = ["src/sl_behavior", "examples"]
 [tool.ruff]
 line-length = 120         # The maximum column length is set to 120 for this project.
 indent-width = 4          # Same as black, indents are 4 spaces
-target-version = "py313"  # Targets the lowest supported version of python
+target-version = "py314"  # Targets the lowest supported version of python
 src = ["src"]             # The name of the source directory
 
 # Excludes 'service' .py files, such as the sphinx configuration file, from linting.
@@ -102,6 +101,15 @@ lint.select = ["ALL"]
 
 # General ignore directives
 lint.ignore = [
+    "W291",  # Conflicts with docstring formatting
+    "W293",  # Conflicts with UI style formatting
+    "C901",  # Sometimes complex functions are necessary
+    "PLR0913",  # Sometimes complex functions are necessary
+    "PLR0912",  # Sometimes complex functions are necessary
+    "PLR0915",  # Sometimes complex type defenitions are necessary
+    "PLR0911", # Sometimes complex return graphs are necessary
+    "TID252", # Conflicts with the project's import management strategy
+    "BLE001",  # Catching blind exceptions is necessary for the functioning of this library
     "COM812", # Conflicts with the formatter
     "ISC001", # Conflicts with the formatter
     "PT001", # https://github.com/astral-sh/ruff/issues/8796#issuecomment-182590771
@@ -164,3 +172,15 @@ source = ["src/", ".tox/*/lib/python*/site-packages/"]
 # Same as above, specifies the output directory for the coverage .html report
 [tool.coverage.html]
 directory = "reports/coverage_html"
+
+# Specifies additional ignore directives
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "def __del__",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "pass",
+]
