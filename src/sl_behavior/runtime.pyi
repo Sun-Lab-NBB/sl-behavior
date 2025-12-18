@@ -3,16 +3,17 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray as NDArray
 from sl_shared_assets import (
-    MesoscopeExperimentTrial as MesoscopeExperimentTrial,
+    GasPuffTrial as GasPuffTrial,
+    WaterRewardTrial as WaterRewardTrial,
     MesoscopeExperimentConfiguration,
 )
 
 _CUE_SEQUENCE_MIN_LENGTH: int
 _SYSTEM_STATE_CODE: int
-_EXPERIMENT_STATE_CODE: int
-_GUIDANCE_STATE_CODE: int
-_REWARD_VISIBILITY_CODE: int
-_CUE_SEQUENCE_BREAKPOINT_CODE: int
+_RUNTIME_STATE_CODE: int
+_REINFORCING_GUIDANCE_STATE_CODE: int
+_AVERSIVE_GUIDANCE_STATE_CODE: int
+_DISTANCE_SNAPSHOT_CODE: int
 
 def _prepare_motif_data(
     trial_motifs: list[NDArray[np.uint8]], trial_distances: list[float]
@@ -41,4 +42,4 @@ def _process_trial_sequence(
 def _extract_mesoscope_vr_data(
     log_path: Path, output_directory: Path, experiment_configuration: MesoscopeExperimentConfiguration | None = None
 ) -> None: ...
-def process_runtime_data(session_path: Path, job_id: str) -> None: ...
+def process_runtime_data(session_path: Path) -> None: ...

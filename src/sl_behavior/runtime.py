@@ -11,13 +11,12 @@ import polars as pl
 from numpy.typing import NDArray  # noqa: TC002
 from sl_shared_assets import (
     SessionData,
+    GasPuffTrial,
     SessionTypes,
-    ProcessingTracker,
-    MesoscopeExperimentTrial,
+    WaterRewardTrial,
     MesoscopeExperimentConfiguration,
 )
 from ataraxis_base_utilities import LogLevel, console
-from sl_forgery.shared_assets import ProcessingTrackers
 
 if TYPE_CHECKING:
     from numpy.lib.npyio import NpzFile
@@ -26,15 +25,15 @@ if TYPE_CHECKING:
 _CUE_SEQUENCE_MIN_LENGTH: int = 500
 """The minimum length, in bytes, of a valid VR wall cue sequence message."""
 _SYSTEM_STATE_CODE: int = 1
-"""Message code for VR system state data."""
-_EXPERIMENT_STATE_CODE: int = 2
-"""Message code for experiment state data."""
-_GUIDANCE_STATE_CODE: int = 3
-"""Message code for lick guidance state data."""
-_REWARD_VISIBILITY_CODE: int = 4
-"""Message code for reward visibility state data."""
-_CUE_SEQUENCE_BREAKPOINT_CODE: int = 5
-"""Message code for cue sequence breakpoint distance data."""
+"""The code for the for VR system state data."""
+_RUNTIME_STATE_CODE: int = 2
+"""The code for the session's runtime state data."""
+_REINFORCING_GUIDANCE_STATE_CODE: int = 3
+"""The code for the reinforcing trial guidance state data."""
+_AVERSIVE_GUIDANCE_STATE_CODE: int = 4
+"""The code for the aversive trial guidance state data."""
+_DISTANCE_SNAPSHOT_CODE: int = 5
+"""The code for the distance snapshot data logged when VR wall cue sequence changes."""
 
 
 def _prepare_motif_data(
@@ -194,7 +193,7 @@ def _decompose_multiple_cue_sequences_into_trials(
         console.error(message=message, error=ValueError)
 
     # Extracts the list of trial structures supported by the processed experiment runtime
-    trials: list[MesoscopeExperimentTrial] = list(experiment_configuration.trial_structures.values())
+    trials: list[WaterRewardTrial | GasPuffTrial] = list(experiment_configuration.trial_structures.values())
 
     # Extracts trial motif (cue sequences for each trial type) and their corresponding distances in cm
     trial_motifs: list[NDArray[np.uint8]] = [np.array(trial.cue_sequence, dtype=np.uint8) for trial in trials]
@@ -340,7 +339,6 @@ def _process_trial_sequence(
     Args:
         experiment_configuration: The MesoscopeExperimentConfiguration instance for the processed session.
         trial_types: The indices used to query the trial data for each trial experienced by the animal during runtime.
-            The indices are used to query each trial's MesoscopeExperimentTrial instance from the configuration.
         trial_distances: The cumulative traveled distance, in centimeters, at which the animal fully completed each
             trial during runtime. The elements in this array use the same order as elements in the trial_types array.
 
@@ -348,23 +346,23 @@ def _process_trial_sequence(
         A tuple of five NumPy arrays. The first array stores the IDs of the Virtual Reality environment cues
         experienced by the animal during runtime. The second array stores the cumulative distance, in centimeters,
         traveled by the animal at the onset of each cue. The third array stores the cumulative distance traveled by
-        the animal when it entered each trial's reward zone. The fourth array stores the cumulative distance traveled
-        by the animal when it left each trial's reward zone. The fifth array stores the cumulative distance traveled
-        by the animal at the start of each trial.
+        the animal when it entered each trial's trigger zone. The fourth array stores the cumulative distance
+        traveled by the animal when it left each trial's trigger zone. The fifth array stores the cumulative
+        distance traveled by the animal at the start of each trial.
     """
     # Extracts the list of trial type objects from experiment configuration data.
-    trials: list[MesoscopeExperimentTrial] = list(experiment_configuration.trial_structures.values())
+    trials: list[WaterRewardTrial | GasPuffTrial] = list(experiment_configuration.trial_structures.values())
 
     # Also extract the dictionary that maps wall cue IDs to the length of each cue, in centimeters, and a static
     # offset used to shift the animal's starting position on the VR track.
     cue_offset = experiment_configuration.cue_offset_cm
-    cue_map = experiment_configuration.cue_map  # Maps cue_id -> length_cm
+    cue_map = {cue.code: cue.length_cm for cue in experiment_configuration.cues}  # Maps cue_id -> length in cm
 
     # Pre-initializes output iterables as lists to efficiently support dynamic growth
     distances_list: list[np.float64] = []
     cues_list: list[np.uint8] = []
-    reward_zone_starts_list: list[np.float64] = []
-    reward_zone_ends_list: list[np.float64] = []
+    trigger_zone_starts_list: list[np.float64] = []
+    trigger_zone_ends_list: list[np.float64] = []
     trial_start_distances_list: list[np.float64] = []
 
     # Tracks the cumulative distance as the function essentially rebuilds the stitched cue sequence from trial
@@ -436,26 +434,26 @@ def _process_trial_sequence(
             cumulative_distance += effective_distance_to_next_cue
             distance_within_trial += effective_distance_to_next_cue
 
-        # Queries reward zone boundaries relative to trial start.
-        reward_start_relative = trial_type.reward_zone_start_cm
-        reward_end_relative = trial_type.reward_zone_end_cm
+        # Queries trigger zone boundaries relative to trial start.
+        trigger_start_relative = trial_type.stimulus_trigger_zone_start_cm
+        trigger_end_relative = trial_type.stimulus_trigger_zone_end_cm
 
         # Converts to absolute positions given the global monotonically increasing traveled distance
-        reward_start_absolute = previous_trial_end_distance + reward_start_relative
-        reward_end_absolute = previous_trial_end_distance + reward_end_relative
+        trigger_start_absolute = previous_trial_end_distance + trigger_start_relative
+        trigger_end_absolute = previous_trial_end_distance + trigger_end_relative
 
-        # Only adds reward zones if the start falls within the actual distance traveled
-        if reward_start_absolute <= trial_distances[index]:
-            reward_zone_starts_list.append(reward_start_absolute)
+        # Only adds trigger zones if the start falls within the actual distance traveled
+        if trigger_start_absolute <= trial_distances[index]:
+            trigger_zone_starts_list.append(trigger_start_absolute)
 
-            # Clips the end if the trial was truncated before the animal reached the end of the reward zone
-            if reward_end_absolute <= trial_distances[index]:
-                reward_zone_ends_list.append(reward_end_absolute)
+            # Clips the end if the trial was truncated before the animal reached the end of the trigger zone
+            if trigger_end_absolute <= trial_distances[index]:
+                trigger_zone_ends_list.append(trigger_end_absolute)
             else:
-                # The reward zone was cut off by trial truncation, so 'ends' reward zone using the trial breakpoint
+                # The trigger zone was cut off by trial truncation, so 'ends' trigger zone using the trial breakpoint
                 # data
                 # noinspection PyTypeChecker
-                reward_zone_ends_list.append(trial_distances[index])
+                trigger_zone_ends_list.append(trial_distances[index])
 
         # Updates previous trial end distance for next iteration
         previous_trial_end_distance = trial_distances[index]
@@ -463,11 +461,11 @@ def _process_trial_sequence(
     # Converts lists to numpy arrays and returns them to caller
     distances = np.array(distances_list, dtype=np.float64)
     cues = np.array(cues_list, dtype=np.uint8)
-    reward_zone_starts = np.array(reward_zone_starts_list, dtype=np.float64)
-    reward_zone_ends = np.array(reward_zone_ends_list, dtype=np.float64)
+    trigger_zone_starts = np.array(trigger_zone_starts_list, dtype=np.float64)
+    trigger_zone_ends = np.array(trigger_zone_ends_list, dtype=np.float64)
     trial_start_distances = np.array(trial_start_distances_list, dtype=np.float64)
 
-    return cues, distances, reward_zone_starts, reward_zone_ends, trial_start_distances
+    return cues, distances, trigger_zone_starts, trigger_zone_ends, trial_start_distances
 
 
 def _extract_mesoscope_vr_data(
@@ -491,14 +489,14 @@ def _extract_mesoscope_vr_data(
     # Pre-creates the variables used to store extracted data
     system_states = []
     system_timestamps = []
-    experiment_states = []
-    experiment_timestamps = []
-    guidance_states = []
-    guidance_timestamps = []
-    reward_visibility_states = []
-    reward_visibility_timestamps = []
+    runtime_states = []
+    runtime_timestamps = []
+    reinforcing_guidance_states = []
+    reinforcing_guidance_timestamps = []
+    aversive_guidance_states = []
+    aversive_guidance_timestamps = []
     cue_sequences: list[NDArray[np.uint8]] = []
-    cue_sequence_breakpoints: list[np.float64] = []
+    distance_snapshots: list[np.float64] = []
 
     # Locates the logging onset timestamp. The onset is used to convert the timestamps for logged data into absolute
     # UTC timestamps. Originally, all timestamps other than onset are stored as elapsed time in microseconds
@@ -545,31 +543,32 @@ def _extract_mesoscope_vr_data(
             system_states.append(np.uint8(payload[1]))
             system_timestamps.append(timestamp)
 
-        # If the starting code is _EXPERIMENT_STATE_CODE, the message communicates the experiment state code.
-        elif payload[0] == _EXPERIMENT_STATE_CODE:
-            # Extracts the experiment state code from the second byte of the message.
-            experiment_states.append(np.uint8(payload[1]))
-            experiment_timestamps.append(timestamp)
+        # If the starting code is _RUNTIME_STATE_CODE, the message communicates the session runtime state code.
+        elif payload[0] == _RUNTIME_STATE_CODE:
+            # Extracts the runtime state code from the second byte of the message.
+            runtime_states.append(np.uint8(payload[1]))
+            runtime_timestamps.append(timestamp)
 
-        # If the starting code is _GUIDANCE_STATE_CODE, the message communicates the current lick guidance state
-        elif payload[0] == _GUIDANCE_STATE_CODE:
-            guidance_states.append(np.uint8(payload[1]))
-            guidance_timestamps.append(timestamp)
+        # If the starting code is _REINFORCING_GUIDANCE_STATE_CODE, the message communicates the current reinforcing
+        # (water reward) trial guidance state.
+        elif payload[0] == _REINFORCING_GUIDANCE_STATE_CODE:
+            reinforcing_guidance_states.append(np.uint8(payload[1]))
+            reinforcing_guidance_timestamps.append(timestamp)
 
-        # If the starting code is _REWARD_VISIBILITY_CODE, the message communicates the current reward collision wall
-        # visibility state
-        elif payload[0] == _REWARD_VISIBILITY_CODE:
-            reward_visibility_states.append(np.uint8(payload[1]))
-            reward_visibility_timestamps.append(timestamp)
+        # If the starting code is _AVERSIVE_GUIDANCE_STATE_CODE, the message communicates the current aversive
+        # (gas puff) trial guidance state.
+        elif payload[0] == _AVERSIVE_GUIDANCE_STATE_CODE:
+            aversive_guidance_states.append(np.uint8(payload[1]))
+            aversive_guidance_timestamps.append(timestamp)
 
-        # If the starting code is _CUE_SEQUENCE_BREAKPOINT_CODE, the message communicates the breakpoint distance for
-        # the current cue sequence.
-        elif payload[0] == _CUE_SEQUENCE_BREAKPOINT_CODE:
+        # If the starting code is _DISTANCE_SNAPSHOT_CODE, the message communicates a distance snapshot taken when the
+        # VR wall cue sequence changes.
+        elif payload[0] == _DISTANCE_SNAPSHOT_CODE:
             # Skips the first byte (message code) and gets the next 8 bytes storing the distance as a float64
             distance_bytes = payload[1:9]
             traveled_distance = distance_bytes.view(dtype="<f8")[0]  # Converts back to float64
             # noinspection PyTypeChecker
-            cue_sequence_breakpoints.append(traveled_distance)
+            distance_snapshots.append(traveled_distance)
 
         # Otherwise, the payload cannot be attributed to a known type and is, therefore, ignored
 
@@ -586,37 +585,39 @@ def _extract_mesoscope_vr_data(
     )
     system_dataframe.write_ipc(output_directory.joinpath("system_state_data.feather"), compression="uncompressed")
 
-    # Experiment states
-    exp_dataframe = pl.DataFrame(
+    # Runtime states
+    runtime_dataframe = pl.DataFrame(
         {
-            "time_us": experiment_timestamps,
-            "experiment_state": experiment_states,
+            "time_us": runtime_timestamps,
+            "runtime_state": runtime_states,
         }
     )
-    exp_dataframe.write_ipc(output_directory.joinpath("experiment_state_data.feather"), compression="uncompressed")
+    runtime_dataframe.write_ipc(output_directory.joinpath("runtime_state_data.feather"), compression="uncompressed")
 
-    # Note, although lick guidance and reward visibility are parsed for all sessions, this data only exists for
-    # experiment sessions. Therefore, only attempt to export the data if the processed session is an experiment session.
-    # The same holds with respect to the VR track data parsed below.
+    # Note, although guidance states are parsed for all sessions, this data only exists for experiment sessions.
+    # Therefore, only attempt to export the data if the processed session is an experiment session. The same holds
+    # with respect to the VR track data parsed below.
     if experiment_configuration is not None:
-        # Lick guidance states
-        system_dataframe = pl.DataFrame(
+        # Reinforcing (water reward) trial guidance states
+        reinforcing_guidance_dataframe = pl.DataFrame(
             {
-                "time_us": guidance_timestamps,
-                "lick_guidance_state": guidance_states,
+                "time_us": reinforcing_guidance_timestamps,
+                "reinforcing_guidance_state": reinforcing_guidance_states,
             }
         )
-        system_dataframe.write_ipc(output_directory.joinpath("guidance_state_data.feather"), compression="uncompressed")
+        reinforcing_guidance_dataframe.write_ipc(
+            output_directory.joinpath("reinforcing_guidance_state_data.feather"), compression="uncompressed"
+        )
 
-        # Reward visibility states
-        system_dataframe = pl.DataFrame(
+        # Aversive (gas puff) trial guidance states
+        aversive_guidance_dataframe = pl.DataFrame(
             {
-                "time_us": reward_visibility_timestamps,
-                "reward_visibility_state": reward_visibility_states,
+                "time_us": aversive_guidance_timestamps,
+                "aversive_guidance_state": aversive_guidance_states,
             }
         )
-        system_dataframe.write_ipc(
-            output_directory.joinpath("reward_visibility_state_data.feather"), compression="uncompressed"
+        aversive_guidance_dataframe.write_ipc(
+            output_directory.joinpath("aversive_guidance_state_data.feather"), compression="uncompressed"
         )
 
         # Cue sequence for Mesoscope-VR system
@@ -628,7 +629,7 @@ def _extract_mesoscope_vr_data(
             trial_types, trial_distances = _decompose_multiple_cue_sequences_into_trials(
                 experiment_configuration=experiment_configuration,
                 cue_sequences=cue_sequences,
-                distance_breakpoints=cue_sequence_breakpoints,
+                distance_breakpoints=distance_snapshots,
             )
         else:
             trial_types, trial_distances = _decompose_cue_sequence_into_trials(
@@ -637,8 +638,8 @@ def _extract_mesoscope_vr_data(
 
         # Uses the computed sequence of trials and the information stored inside the ExperimentConfiguration class to
         # determine which VR cues were seen by the animal as it progressed through the experiment trials. Also computes
-        # the traveled distance boundaries for reward zones.
-        cue_sequence, distance_sequence, reward_start, reward_stop, trial_start = _process_trial_sequence(
+        # the traveled distance boundaries for trigger zones.
+        cue_sequence, distance_sequence, trigger_start, trigger_end, trial_start = _process_trial_sequence(
             experiment_configuration, trial_types, trial_distances
         )
 
@@ -651,14 +652,16 @@ def _extract_mesoscope_vr_data(
         )
         cue_dataframe.write_ipc(output_directory.joinpath("vr_cue_data.feather"), compression="uncompressed")
 
-        # Exports reward_zone-distance mapping as a Polars dataframe
-        reward_dataframe = pl.DataFrame(
+        # Exports trigger_zone-distance mapping as a Polars dataframe
+        trigger_zone_dataframe = pl.DataFrame(
             {
-                "reward_zone_start_cm": reward_start,
-                "reward_zone_end_cm": reward_stop,
+                "trigger_zone_start_cm": trigger_start,
+                "trigger_zone_end_cm": trigger_end,
             }
         )
-        reward_dataframe.write_ipc(output_directory.joinpath("vr_reward_zone_data.feather"), compression="uncompressed")
+        trigger_zone_dataframe.write_ipc(
+            output_directory.joinpath("vr_trigger_zone_data.feather"), compression="uncompressed"
+        )
 
         # Exports trial-distance mapping as a Polars dataframe
         trial_dataframe = pl.DataFrame(
@@ -670,10 +673,7 @@ def _extract_mesoscope_vr_data(
         trial_dataframe.write_ipc(output_directory.joinpath("trial_data.feather"), compression="uncompressed")
 
 
-def process_runtime_data(
-    session_path: Path,
-    job_id: str,
-) -> None:
+def process_runtime_data(session_path: Path) -> None:
     """Extracts acquisition system and runtime (task) data from the data acquisition system .npz log file.
 
     Notes:
@@ -683,7 +683,6 @@ def process_runtime_data(
 
     Args:
         session_path: The path to the session directory for which to process the acquisition system log file.
-        job_id: The unique hexadecimal identifier for this processing job.
     """
     # Loads the target session's data hierarchy into memory
     session = SessionData.load(session_path=session_path)
@@ -692,36 +691,20 @@ def process_runtime_data(
     # under the log file with source ID '1'.
     log_path = session.raw_data.behavior_data_path.joinpath("1_log.npz")
 
-    # Initializes the processing tracker for this pipeline.
-    tracker = ProcessingTracker(
-        file_path=session.tracking_data.tracking_data_path.joinpath(ProcessingTrackers.BEHAVIOR)
-    )
-
-    # Marks the job as running.
-    tracker.start_job(job_id=job_id)
-
-    try:
-        # If the session is an experiment, loads the experiment configuration data to memory
-        experiment_configuration: MesoscopeExperimentConfiguration | None = None
-        if session.session_type == SessionTypes.MESOSCOPE_EXPERIMENT:
-            experiment_configuration = MesoscopeExperimentConfiguration.from_yaml(
-                session.raw_data.experiment_configuration_path
-            )
-
-        console.echo(message="Extracting runtime data from the '1' log file...")
-
-        # Extracts the runtime data
-        _extract_mesoscope_vr_data(
-            log_path=log_path,
-            experiment_configuration=experiment_configuration,
-            output_directory=session.processed_data.behavior_data_path,
+    # If the session is an experiment, loads the experiment configuration data to memory
+    experiment_configuration: MesoscopeExperimentConfiguration | None = None
+    if session.session_type == SessionTypes.MESOSCOPE_EXPERIMENT:
+        experiment_configuration = MesoscopeExperimentConfiguration.from_yaml(
+            session.raw_data.experiment_configuration_path
         )
 
-        # Marks the job as successfully completed.
-        tracker.complete_job(job_id=job_id)
-        console.echo(message="Runtime data processing: Complete.", level=LogLevel.SUCCESS)
+    console.echo(message="Extracting runtime data from the '1' log file...")
 
-    # If the runtime encounters an error, marks the job as failed.
-    except Exception:
-        tracker.fail_job(job_id=job_id)
-        raise
+    # Extracts the runtime data
+    _extract_mesoscope_vr_data(
+        log_path=log_path,
+        experiment_configuration=experiment_configuration,
+        output_directory=session.processed_data.behavior_data_path,
+    )
+
+    console.echo(message="Runtime data processing: Complete.", level=LogLevel.SUCCESS)

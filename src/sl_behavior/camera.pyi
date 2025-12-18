@@ -1,7 +1,10 @@
+from enum import IntEnum
 from pathlib import Path
 
-from _typeshed import Incomplete
+class CameraLogIds(IntEnum):
+    FACE = 51
+    BODY = 62
 
-_CAMERA_OUTPUT_NAMES: Incomplete
+CAMERA_OUTPUT_NAMES: dict[int, str]
 
-def process_camera_timestamps(session_path: Path, log_id: int, job_id: str, workers: int = -1) -> None: ...
+def process_camera_timestamps(session_path: Path, log_id: int, workers: int = -1) -> None: ...

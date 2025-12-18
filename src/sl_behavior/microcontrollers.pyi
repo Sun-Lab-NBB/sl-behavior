@@ -1,3 +1,4 @@
+from enum import IntEnum
 from typing import TypedDict
 from pathlib import Path
 from collections.abc import Callable as Callable
@@ -7,9 +8,12 @@ from numpy.typing import NDArray as NDArray
 from sl_shared_assets import MesoscopeHardwareState
 from ataraxis_communication_interface import ExtractedModuleData as ExtractedModuleData
 
-_ACTOR_LOG_ID: int
-_SENSOR_LOG_ID: int
-_ENCODER_LOG_ID: int
+from .utilities import interpolate_data as interpolate_data
+
+class MicrocontrollerLogIds(IntEnum):
+    ACTOR = 101
+    SENSOR = 152
+    ENCODER = 203
 
 class _ParseTask(TypedDict):
     func: Callable[..., None]
@@ -32,6 +36,7 @@ def _parse_valve_data(
     scale_coefficient: np.float64,
     nonlinearity_exponent: np.float64,
 ) -> None: ...
+def _parse_gas_puff_data(extracted_module_data: ExtractedModuleData, output_file: Path) -> None: ...
 def _parse_lick_data(
     extracted_module_data: ExtractedModuleData, output_file: Path, lick_threshold: np.uint16
 ) -> None: ...
@@ -56,4 +61,4 @@ def _extract_mesoscope_vr_sensor_data(
 def _extract_mesoscope_vr_encoder_data(
     log_path: Path, output_directory: Path, hardware_state: MesoscopeHardwareState, workers: int
 ) -> None: ...
-def process_microcontroller_data(session_path: Path, log_id: int, job_id: str, workers: int = -1) -> None: ...
+def process_microcontroller_data(session_path: Path, log_id: int, workers: int = -1) -> None: ...

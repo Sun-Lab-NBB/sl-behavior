@@ -2,6 +2,7 @@
 microcontrollers (hardware modules) used in the Sun lab.
 """
 
+from enum import IntEnum
 from typing import TypedDict
 from pathlib import Path  # noqa: TC003
 from collections.abc import Callable  # noqa: TC003
@@ -11,22 +12,26 @@ from tqdm import tqdm
 import numpy as np
 import polars as pl
 from numpy.typing import NDArray  # noqa: TC002
-from sl_shared_assets import SessionData, ProcessingTracker, MesoscopeHardwareState
+from sl_shared_assets import SessionData, MesoscopeHardwareState
 from ataraxis_base_utilities import LogLevel, console
-from sl_forgery.shared_assets import ProcessingTrackers, interpolate_data
 from ataraxis_communication_interface import (
     ExtractedModuleData,
     ExtractedMessageData,
     extract_logged_hardware_module_data,
 )
 
-# Microcontroller log file identifiers used by the Mesoscope-VR data acquisition system.
-_ACTOR_LOG_ID: int = 101
-"""Log file identifier for the Actor microcontroller."""
-_SENSOR_LOG_ID: int = 152
-"""Log file identifier for the Sensor microcontroller."""
-_ENCODER_LOG_ID: int = 203
-"""Log file identifier for the Encoder microcontroller."""
+from .utilities import interpolate_data
+
+
+class MicrocontrollerLogIds(IntEnum):
+    """Defines the log file identifiers for microcontrollers used by the Mesoscope-VR data acquisition system."""
+
+    ACTOR = 101
+    """The log file identifier for the Actor microcontroller."""
+    SENSOR = 152
+    """The log file identifier for the Sensor microcontroller."""
+    ENCODER = 203
+    """The log file identifier for the Encoder microcontroller."""
 
 
 class _ParseTask(TypedDict):
@@ -393,6 +398,78 @@ def _parse_valve_data(
     module_dataframe.write_ipc(file=output_file, compression="uncompressed")
 
 
+def _parse_gas_puff_data(extracted_module_data: ExtractedModuleData, output_file: Path) -> None:
+    """Extracts and saves the data acquired by the gas puff ValveModule during runtime as a .feather file.
+
+    Args:
+        extracted_module_data: The ExtractedModuleData instance that stores the data logged by the module during
+            runtime.
+        output_file: The path to the output .feather file where to save the extracted data.
+    """
+    event_data = extracted_module_data.event_data
+
+    # This function looks for event-codes 51 (kOpen) and event-codes 52 (kClosed). Unlike the water valve, the gas
+    # puff valve does not have tone signals or volume calibration - it simply tracks open/closed states.
+
+    # The way this module is implemented guarantees there is at least one code 52 message, but there may be no code
+    # 51 messages if no puffs were delivered.
+    open_data = event_data.get(np.uint8(51), ())
+    closed_data = event_data[np.uint8(52)]
+
+    # If there were no valve open events, no gas puffs were delivered. In this case, uses the first code 52 timestamp
+    # to report zero puffs and ends early.
+    if not open_data:
+        module_dataframe = pl.DataFrame(
+            {
+                "time_us": np.array([closed_data[0].timestamp], dtype=np.uint64),
+                "puff_state": np.array([0], dtype=np.uint8),
+                "cumulative_puff_count": np.array([0], dtype=np.uint32),
+            }
+        )
+        module_dataframe.write_ipc(file=output_file, compression="uncompressed")
+        return
+
+    # Pre-creates the storage numpy arrays for both message types.
+    n_on = len(open_data)
+    n_off = len(closed_data)
+    total_length = n_on + n_off
+    timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
+    states: NDArray[np.uint8] = np.empty(total_length, dtype=np.uint8)
+
+    # Extracts Open (Code 51) states.
+    timestamps[:n_on] = np.array([msg.timestamp for msg in open_data], dtype=np.uint64)
+    states[:n_on] = 1  # Open state
+
+    # Extracts Closed (Code 52) states.
+    timestamps[n_on:] = np.array([msg.timestamp for msg in closed_data], dtype=np.uint64)
+    states[n_on:] = 0  # Closed state
+
+    # Sorts both arrays based on timestamps.
+    sort_indices = np.argsort(timestamps)
+    timestamps = timestamps[sort_indices]
+    states = states[sort_indices]
+
+    # Calculates the cumulative puff count. A puff is complete when the valve transitions from open (1) to closed (0).
+    # Count falling edges (1 -> 0 transitions) as completed puffs.
+    edges = np.diff(states, prepend=states[0])
+    falling_edges = edges == -1  # Transitions from 1 to 0
+
+    # Creates cumulative puff count - increments at each falling edge
+    cumulative_puffs: NDArray[np.uint32] = np.cumsum(falling_edges.astype(np.uint32))
+
+    # Creates a Polars DataFrame with the processed data
+    module_dataframe = pl.DataFrame(
+        {
+            "time_us": timestamps,
+            "puff_state": states,
+            "cumulative_puff_count": cumulative_puffs,
+        }
+    )
+
+    # Saves extracted data using Feather format and no compression to support memory-mapping the file during processing.
+    module_dataframe.write_ipc(file=output_file, compression="uncompressed")
+
+
 def _parse_lick_data(extracted_module_data: ExtractedModuleData, output_file: Path, lick_threshold: np.uint16) -> None:
     """Extracts and saves the data acquired by the LickModule during runtime as a .feather file.
 
@@ -722,6 +799,21 @@ def _extract_mesoscope_vr_actor_data(
     else:
         data_indices.append(None)
 
+    # Gas Puff Valve
+    if hardware_state.delivered_gas_puffs:
+        module_type_id.append((5, 2))
+        data_indices.append(index)
+        parse_tasks.append(
+            {
+                "func": _parse_gas_puff_data,
+                "output": output_directory.joinpath("gas_puff_data.feather"),
+                "kwargs": {},
+            }
+        )
+        index += 1
+    else:
+        data_indices.append(None)
+
     # Aborts early if no module data needs to be parsed.
     if set(data_indices) == {None}:
         return
@@ -943,7 +1035,6 @@ def _extract_mesoscope_vr_encoder_data(
 def process_microcontroller_data(
     session_path: Path,
     log_id: int,
-    job_id: str,
     workers: int = -1,
 ) -> None:
     """Reads the specified microcontroller log .npz file and extracts the behavior data recorded by the hardware modules
@@ -956,7 +1047,6 @@ def process_microcontroller_data(
         session_path: The path to the session directory for which to process the microcontroller log file.
         log_id: The unique identifier of the microcontroller log file to process: 101 (actor), 152 (sensor),
             or 203 (encoder).
-        job_id: The unique hexadecimal identifier for this processing job.
         workers: The number of worker processes to use for extracting the hardware module messages in parallel. Setting
             this argument to a value less than 1 uses all available CPU cores. Setting this to a value of 1 conducts
             the processing sequentially.
@@ -967,48 +1057,32 @@ def process_microcontroller_data(
     # Resolves the path to the processed log file
     log_path = session.raw_data.behavior_data_path.joinpath(f"{log_id}_log.npz")
 
-    # Initializes the processing tracker for this pipeline.
-    tracker = ProcessingTracker(
-        file_path=session.tracking_data.tracking_data_path.joinpath(ProcessingTrackers.BEHAVIOR)
-    )
+    # Loads the hardware state configuration
+    hardware_state = MesoscopeHardwareState.from_yaml(session.raw_data.hardware_state_path)
 
-    # Marks the job as running.
-    tracker.start_job(job_id=job_id)
+    console.echo(f"Extracting microcontroller hardware module data from the '{log_id}' log file...")
 
-    try:
-        # Loads the hardware state configuration
-        hardware_state = MesoscopeHardwareState.from_yaml(session.raw_data.hardware_state_path)
+    # Depending on the target log ID, calls the appropriate extraction function.
+    if log_id == MicrocontrollerLogIds.ACTOR:
+        _extract_mesoscope_vr_actor_data(
+            log_path=log_path,
+            output_directory=session.processed_data.behavior_data_path,
+            hardware_state=hardware_state,
+            workers=workers,
+        )
+    elif log_id == MicrocontrollerLogIds.SENSOR:
+        _extract_mesoscope_vr_sensor_data(
+            log_path=log_path,
+            output_directory=session.processed_data.behavior_data_path,
+            hardware_state=hardware_state,
+            workers=workers,
+        )
+    elif log_id == MicrocontrollerLogIds.ENCODER:
+        _extract_mesoscope_vr_encoder_data(
+            log_path=log_path,
+            output_directory=session.processed_data.behavior_data_path,
+            hardware_state=hardware_state,
+            workers=workers,
+        )
 
-        console.echo(f"Extracting microcontroller hardware module data from the '{log_id}' log file...")
-
-        # Depending on the target log ID, calls the appropriate extraction function.
-        if log_id == _ACTOR_LOG_ID:
-            _extract_mesoscope_vr_actor_data(
-                log_path=log_path,
-                output_directory=session.processed_data.behavior_data_path,
-                hardware_state=hardware_state,
-                workers=workers,
-            )
-        elif log_id == _SENSOR_LOG_ID:
-            _extract_mesoscope_vr_sensor_data(
-                log_path=log_path,
-                output_directory=session.processed_data.behavior_data_path,
-                hardware_state=hardware_state,
-                workers=workers,
-            )
-        elif log_id == _ENCODER_LOG_ID:
-            _extract_mesoscope_vr_encoder_data(
-                log_path=log_path,
-                output_directory=session.processed_data.behavior_data_path,
-                hardware_state=hardware_state,
-                workers=workers,
-            )
-
-        # Marks the job as successfully completed.
-        tracker.complete_job(job_id=job_id)
-        console.echo("MicroController hardware module data processing: Complete.", level=LogLevel.SUCCESS)
-
-    # If the runtime encounters an error, marks the job as failed.
-    except Exception:
-        tracker.fail_job(job_id=job_id)
-        raise
+    console.echo("MicroController hardware module data processing: Complete.", level=LogLevel.SUCCESS)
