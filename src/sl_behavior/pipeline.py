@@ -110,145 +110,26 @@ def _initialize_processing_tracker(
     return job_ids
 
 
-def process_session(
-    session_path: Path,
-    job_id: str | None = None,
-    *,
-    process_runtime: bool = False,
-    process_face_camera: bool = False,
-    process_body_camera: bool = False,
-    process_actor_microcontroller: bool = False,
-    process_sensor_microcontroller: bool = False,
-    process_encoder_microcontroller: bool = False,
-    workers: int = -1,
-) -> None:
-    """Processes the requested behavior data log of the target data acquisition session.
-
-    Args:
-        session_path: The path to the session's data directory.
-        job_id: The unique hexadecimal identifier for the processing job to execute. If provided, only the job
-            matching this ID is executed. If not provided, all requested jobs are run sequentially with automatic
-            tracker management. Typically, this mode of job definition is used when running the processing on the
-            remote compute server via the bindings in the sl-forgery library.
-        process_runtime: Determines whether to process the session runtime data.
-        process_face_camera: Determines whether to process the face camera timestamps.
-        process_body_camera: Determines whether to process the body camera timestamps.
-        process_actor_microcontroller: Determines whether to process the Actor microcontroller data.
-        process_sensor_microcontroller: Determines whether to process the Sensor microcontroller data.
-        process_encoder_microcontroller: Determines whether to process the Encoder microcontroller data.
-        workers: The number of worker processes to use for parallel processing. Setting this to a value less than 1
-            uses all available CPU cores. Setting this to 1 conducts processing sequentially.
-    """
-    # Remote mode. If job_id is provided, attempts to run the requested processing job and raises an error if the
-    # job cannot be executed.
-    if job_id is not None:
-        _run_single_job(session_path=session_path, job_id=job_id, workers=workers)
-        return
-
-    # Local mode: Generates job IDs, creates a local tracker file, and runs the requested jobs.
-
-    # Resolves which jobs are available based on existing log files.
-    available_jobs = _resolve_available_jobs(session_path=session_path)
-
-    # Maps job names to their requested flags.
-    requested_jobs: dict[str, bool] = {
-        BehaviorJobNames.RUNTIME: process_runtime,
-        BehaviorJobNames.FACE_CAMERA: process_face_camera,
-        BehaviorJobNames.BODY_CAMERA: process_body_camera,
-        BehaviorJobNames.ACTOR_MICROCONTROLLER: process_actor_microcontroller,
-        BehaviorJobNames.SENSOR_MICROCONTROLLER: process_sensor_microcontroller,
-        BehaviorJobNames.ENCODER_MICROCONTROLLER: process_encoder_microcontroller,
-    }
-
-    # If all requested job flags are False, treats them as all True (process all available jobs).
-    if not any(requested_jobs.values()):
-        requested_jobs = dict.fromkeys(requested_jobs, True)
-
-    # Determines which jobs to run (requested AND available).
-    jobs_to_run = [job_name for job_name, requested in requested_jobs.items() if requested and available_jobs[job_name]]
-
-    # Initializes the tracker and runs all requested jobs sequentially.
-    console.echo(message=f"Initializing processing tracker for {len(jobs_to_run)} job(s)...")
-    job_ids = _initialize_processing_tracker(session_path=session_path, job_names=jobs_to_run)
-
-    # Runs each job sequentially. If a job fails, _run_job_by_name marks it as failed and raises an exception,
-    # aborting further processing. Jobs remaining in standby are handled by sl-forgery.
-    for job_name in jobs_to_run:
-        current_job_id = job_ids[job_name]
-        console.echo(message=f"Running job: {job_name} (ID: {current_job_id})...")
-        _run_job_by_name(session_path=session_path, job_name=job_name, job_id=current_job_id, workers=workers)
-
-    console.echo(message="All processing jobs completed successfully.", level=LogLevel.SUCCESS)
-
-
-def _run_single_job(
-    session_path: Path,
-    job_id: str,
-    workers: int,
-) -> None:
-    """Runs the requested job identified by the input job_id.
-
-    This function generates all possible job IDs, finds which job matches the provided job_id, and executes the
-    corresponding processing pipeline.
-
-    Args:
-        session_path: The path to the session's data directory.
-        job_id: The unique hexadecimal identifier for the processing job to run.
-        workers: The number of worker processes to use for parallel processing.
-
-    Raises:
-        ValueError: If the input job_id does not match any processing jobs supported by the processed session's data.
-    """
-    # Loads the tracker for marking the job as failed if an error occurs before _run_job_by_name is called.
-    session = SessionData.load(session_path=session_path)
-    tracker = ProcessingTracker(
-        file_path=session.tracking_data.tracking_data_path.joinpath(ProcessingTrackers.BEHAVIOR)
-    )
-
-    # Generates all possible job IDs and creates a reverse lookup map.
-    all_job_ids = _generate_job_ids(session_path=session_path, job_names=list(BehaviorJobNames))
-    id_to_name: dict[str, str] = {job_id_val: name for name, job_id_val in all_job_ids.items()}
-
-    # Finds the job name that matches the provided job_id.
-    if job_id not in id_to_name:
-        # Marks the job as failed before raising the error.
-        tracker.fail_job(job_id=job_id)
-        message = (
-            f"Unable to execute the requested job with ID '{job_id}'. The input identifier does not match any "
-            f"jobs available for this session. Use one of the valid job IDs: {list(all_job_ids.values())}."
-        )
-        console.error(message=message, error=ValueError)
-
-    job_name = id_to_name[job_id]
-
-    # Runs the identified job. Note: _run_job_by_name handles tracker updates for success/failure internally.
-    _run_job_by_name(session_path=session_path, job_name=job_name, job_id=job_id, workers=workers)
-
-
-def _run_job_by_name(
+def _execute_job(
     session_path: Path,
     job_name: str,
     job_id: str,
     workers: int,
+    tracker: ProcessingTracker,
 ) -> None:
-    """Runs the requested processing job identified by the input job name.
+    """Executes a single processing job of the behavior data processing pipeline.
 
     Args:
         session_path: The path to the session's data directory.
         job_name: The name of the job to run.
         job_id: The unique hexadecimal identifier for this processing job.
         workers: The number of worker processes to use for parallel processing.
+        tracker: The ProcessingTracker instance used to track the pipeline's runtime status.
 
     Raises:
         ValueError: If the job_name is not recognized.
     """
-    # Loads the session data and initializes the processing tracker.
-    session = SessionData.load(session_path=session_path)
-    tracker = ProcessingTracker(
-        file_path=session.tracking_data.tracking_data_path.joinpath(ProcessingTrackers.BEHAVIOR)
-    )
-
-    # Marks the job as running.
+    console.echo(message=f"Running '{job_name}' job with ID {job_id}...")
     tracker.start_job(job_id=job_id)
 
     try:
@@ -281,9 +162,101 @@ def _run_job_by_name(
             )
             console.error(message=message, error=ValueError)
 
-        # Marks the job as successfully completed.
         tracker.complete_job(job_id=job_id)
 
     except Exception:
         tracker.fail_job(job_id=job_id)
         raise
+
+
+def process_session(
+    session_path: Path,
+    job_id: str | None = None,
+    *,
+    process_runtime: bool = False,
+    process_face_camera: bool = False,
+    process_body_camera: bool = False,
+    process_actor_microcontroller: bool = False,
+    process_sensor_microcontroller: bool = False,
+    process_encoder_microcontroller: bool = False,
+    workers: int = -1,
+) -> None:
+    """Processes the requested behavior data log of the target data acquisition session.
+
+    Args:
+        session_path: The path to the session's data directory.
+        job_id: The unique hexadecimal identifier for the processing job to execute. If provided, only the job
+            matching this ID is executed. If not provided, all requested jobs are run sequentially with automatic
+            tracker management. Typically, this mode of job definition is used when running the processing on the
+            remote compute server via the bindings in the sl-forgery library.
+        process_runtime: Determines whether to process the session runtime data.
+        process_face_camera: Determines whether to process the face camera timestamps.
+        process_body_camera: Determines whether to process the body camera timestamps.
+        process_actor_microcontroller: Determines whether to process the Actor microcontroller data.
+        process_sensor_microcontroller: Determines whether to process the Sensor microcontroller data.
+        process_encoder_microcontroller: Determines whether to process the Encoder microcontroller data.
+        workers: The number of worker processes to use for parallel processing. Setting this to a value less than 1
+            uses all available CPU cores. Setting this to 1 conducts processing sequentially.
+    """
+    # Loads the session data and initializes the processing tracker.
+    session = SessionData.load(session_path=session_path)
+    tracker = ProcessingTracker(
+        file_path=session.tracking_data.tracking_data_path.joinpath(ProcessingTrackers.BEHAVIOR)
+    )
+
+    # Determines the execution mode and resolves job IDs accordingly.
+    if job_id is not None:
+        # REMOTE mode: Finds the job name matching the provided job_id.
+        all_job_ids = _generate_job_ids(session_path=session_path, job_names=list(BehaviorJobNames))
+        id_to_name: dict[str, str] = {v: k for k, v in all_job_ids.items()}
+
+        if job_id not in id_to_name:
+            tracker.fail_job(job_id=job_id)
+            message = (
+                f"Unable to execute the requested job with ID '{job_id}'. The input identifier does not match any "
+                f"jobs available for this session. Use one of the valid job IDs: {list(all_job_ids.values())}."
+            )
+            console.error(message=message, error=ValueError)
+
+        # Runs the job whose id matches the target job_id.
+        job_name = id_to_name[job_id]
+        _execute_job(session_path=session_path, job_name=job_name, job_id=job_id, workers=workers, tracker=tracker)
+    else:
+        # LOCAL mode: Generates job IDs, creates a local tracker file, and runs the requested jobs.
+
+        # Resolves which jobs are available based on existing log files.
+        available_jobs = _resolve_available_jobs(session_path=session_path)
+
+        # Maps job names to their requested flags.
+        requested_jobs: dict[str, bool] = {
+            BehaviorJobNames.RUNTIME: process_runtime,
+            BehaviorJobNames.FACE_CAMERA: process_face_camera,
+            BehaviorJobNames.BODY_CAMERA: process_body_camera,
+            BehaviorJobNames.ACTOR_MICROCONTROLLER: process_actor_microcontroller,
+            BehaviorJobNames.SENSOR_MICROCONTROLLER: process_sensor_microcontroller,
+            BehaviorJobNames.ENCODER_MICROCONTROLLER: process_encoder_microcontroller,
+        }
+
+        # If all requested job flags are False, treats them as all True (process all available jobs).
+        if not any(requested_jobs.values()):
+            requested_jobs = dict.fromkeys(requested_jobs, True)
+
+        # Determines which jobs to run (requested AND available).
+        jobs_to_run = [
+            job_name for job_name, requested in requested_jobs.items() if requested and available_jobs[job_name]
+        ]
+
+        # Initializes the tracker and runs all requested jobs sequentially.
+        console.echo(message=f"Initializing processing tracker for {len(jobs_to_run)} job(s)...")
+        job_ids = _initialize_processing_tracker(session_path=session_path, job_names=jobs_to_run)
+
+        for job_name in jobs_to_run:
+            _execute_job(
+                session_path=session_path,
+                job_name=job_name,
+                job_id=job_ids[job_name],
+                workers=workers,
+                tracker=tracker,
+            )
+
+    console.echo(message="All processing jobs completed successfully.", level=LogLevel.SUCCESS)
