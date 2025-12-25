@@ -598,27 +598,29 @@ def _extract_mesoscope_vr_data(
     # Therefore, only attempt to export the data if the processed session is an experiment session. The same holds
     # with respect to the VR track data parsed below.
     if experiment_configuration is not None:
-        # Reinforcing (water reward) trial guidance states
-        reinforcing_guidance_dataframe = pl.DataFrame(
-            {
-                "time_us": reinforcing_guidance_timestamps,
-                "reinforcing_guidance_state": reinforcing_guidance_states,
-            }
-        )
-        reinforcing_guidance_dataframe.write_ipc(
-            output_directory.joinpath("reinforcing_guidance_state_data.feather"), compression="uncompressed"
-        )
+        # Reinforcing (water reward) trial guidance states. Only exports if reinforcing trials were used.
+        if reinforcing_guidance_states:
+            reinforcing_guidance_dataframe = pl.DataFrame(
+                {
+                    "time_us": reinforcing_guidance_timestamps,
+                    "reinforcing_guidance_state": reinforcing_guidance_states,
+                }
+            )
+            reinforcing_guidance_dataframe.write_ipc(
+                output_directory.joinpath("reinforcing_guidance_state_data.feather"), compression="uncompressed"
+            )
 
-        # Aversive (gas puff) trial guidance states
-        aversive_guidance_dataframe = pl.DataFrame(
-            {
-                "time_us": aversive_guidance_timestamps,
-                "aversive_guidance_state": aversive_guidance_states,
-            }
-        )
-        aversive_guidance_dataframe.write_ipc(
-            output_directory.joinpath("aversive_guidance_state_data.feather"), compression="uncompressed"
-        )
+        # Aversive (gas puff) trial guidance states. Only exports if aversive trials were used.
+        if aversive_guidance_states:
+            aversive_guidance_dataframe = pl.DataFrame(
+                {
+                    "time_us": aversive_guidance_timestamps,
+                    "aversive_guidance_state": aversive_guidance_states,
+                }
+            )
+            aversive_guidance_dataframe.write_ipc(
+                output_directory.joinpath("aversive_guidance_state_data.feather"), compression="uncompressed"
+            )
 
         # Cue sequence for Mesoscope-VR system
 
