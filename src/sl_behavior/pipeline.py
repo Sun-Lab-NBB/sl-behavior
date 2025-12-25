@@ -61,25 +61,28 @@ def _resolve_available_jobs(session_path: Path) -> dict[str, bool]:
     return available_jobs
 
 
-def _generate_job_ids(session_path: Path, job_names: list[str]) -> dict[str, str]:
+def _generate_job_ids(session_path: Path, session_name: str, base_job_names: list[str]) -> dict[str, str]:
     """Generates unique processing job identifiers for the specified jobs.
 
     Args:
         session_path: The path to the session's data directory.
-        job_names: The list of job names for which to generate the IDs.
+        session_name: The unique identifier of the session being processed.
+        base_job_names: The list of base job names (from BehaviorJobNames) for which to generate the IDs.
 
     Returns:
-        A dictionary mapping job names to their generated job IDs.
+        A dictionary mapping full job names (with session prefix) to their generated job IDs.
     """
     job_ids: dict[str, str] = {}
-    for job_name in job_names:
-        job_ids[job_name] = ProcessingTracker.generate_job_id(session_path=session_path, job_name=job_name)
+    for base_job_name in base_job_names:
+        full_job_name = f"{session_name}_{base_job_name}"
+        job_ids[full_job_name] = ProcessingTracker.generate_job_id(session_path=session_path, job_name=full_job_name)
     return job_ids
 
 
 def _initialize_processing_tracker(
     session_path: Path,
-    job_names: list[str],
+    session_name: str,
+    base_job_names: list[str],
 ) -> dict[str, str]:
     """Initializes the processing tracker file using the requested job IDs.
 
@@ -89,10 +92,11 @@ def _initialize_processing_tracker(
 
     Args:
         session_path: The path to the session's data directory.
-        job_names: The names for the processing jobs to track.
+        session_name: The unique identifier of the session being processed.
+        base_job_names: The base job names (from BehaviorJobNames) for the processing jobs to track.
 
     Returns:
-        A dictionary mapping job names to their generated job IDs.
+        A dictionary mapping full job names (with session prefix) to their generated job IDs.
     """
     session = SessionData.load(session_path=session_path)
 
@@ -102,7 +106,7 @@ def _initialize_processing_tracker(
     )
 
     # Generates job IDs for each requested job.
-    job_ids = _generate_job_ids(session_path=session_path, job_names=job_names)
+    job_ids = _generate_job_ids(session_path=session_path, session_name=session_name, base_job_names=base_job_names)
 
     # Initializes all jobs in the tracker file.
     tracker.initialize_jobs(job_ids=list(job_ids.values()))
@@ -133,24 +137,24 @@ def _execute_job(
     tracker.start_job(job_id=job_id)
 
     try:
-        if job_name == BehaviorJobNames.RUNTIME:
+        if job_name.endswith(BehaviorJobNames.RUNTIME):
             process_runtime_data(session_path=session_path)
 
-        elif job_name == BehaviorJobNames.FACE_CAMERA:
+        elif job_name.endswith(BehaviorJobNames.FACE_CAMERA):
             process_camera_timestamps(session_path=session_path, log_id=CameraLogIds.FACE, workers=workers)
 
-        elif job_name == BehaviorJobNames.BODY_CAMERA:
+        elif job_name.endswith(BehaviorJobNames.BODY_CAMERA):
             process_camera_timestamps(session_path=session_path, log_id=CameraLogIds.BODY, workers=workers)
 
-        elif job_name == BehaviorJobNames.ACTOR_MICROCONTROLLER:
+        elif job_name.endswith(BehaviorJobNames.ACTOR_MICROCONTROLLER):
             process_microcontroller_data(session_path=session_path, log_id=MicrocontrollerLogIds.ACTOR, workers=workers)
 
-        elif job_name == BehaviorJobNames.SENSOR_MICROCONTROLLER:
+        elif job_name.endswith(BehaviorJobNames.SENSOR_MICROCONTROLLER):
             process_microcontroller_data(
                 session_path=session_path, log_id=MicrocontrollerLogIds.SENSOR, workers=workers
             )
 
-        elif job_name == BehaviorJobNames.ENCODER_MICROCONTROLLER:
+        elif job_name.endswith(BehaviorJobNames.ENCODER_MICROCONTROLLER):
             process_microcontroller_data(
                 session_path=session_path, log_id=MicrocontrollerLogIds.ENCODER, workers=workers
             )
@@ -200,6 +204,7 @@ def process_session(
     """
     # Loads the session data and initializes the processing tracker.
     session = SessionData.load(session_path=session_path)
+    session_name = session.session_name
     tracker = ProcessingTracker(
         file_path=session.tracking_data.tracking_data_path.joinpath(ProcessingTrackers.BEHAVIOR)
     )
@@ -207,7 +212,9 @@ def process_session(
     # Determines the execution mode and resolves job IDs accordingly.
     if job_id is not None:
         # REMOTE mode: Finds the job name matching the provided job_id.
-        all_job_ids = _generate_job_ids(session_path=session_path, job_names=list(BehaviorJobNames))
+        all_job_ids = _generate_job_ids(
+            session_path=session_path, session_name=session_name, base_job_names=list(BehaviorJobNames)
+        )
         id_to_name: dict[str, str] = {v: k for k, v in all_job_ids.items()}
 
         if job_id not in id_to_name:
@@ -227,7 +234,7 @@ def process_session(
         # Resolves which jobs are available based on existing log files.
         available_jobs = _resolve_available_jobs(session_path=session_path)
 
-        # Maps job names to their requested flags.
+        # Maps base job names to their requested flags.
         requested_jobs: dict[str, bool] = {
             BehaviorJobNames.RUNTIME: process_runtime,
             BehaviorJobNames.FACE_CAMERA: process_face_camera,
@@ -241,20 +248,25 @@ def process_session(
         if not any(requested_jobs.values()):
             requested_jobs = dict.fromkeys(requested_jobs, True)
 
-        # Determines which jobs to run (requested AND available).
-        jobs_to_run = [
-            job_name for job_name, requested in requested_jobs.items() if requested and available_jobs[job_name]
+        # Determines which base jobs to run (requested AND available).
+        base_jobs_to_run = [
+            base_job_name
+            for base_job_name, requested in requested_jobs.items()
+            if requested and available_jobs[base_job_name]
         ]
 
         # Initializes the tracker and runs all requested jobs sequentially.
-        console.echo(message=f"Initializing processing tracker for {len(jobs_to_run)} job(s)...")
-        job_ids = _initialize_processing_tracker(session_path=session_path, job_names=jobs_to_run)
+        console.echo(message=f"Initializing processing tracker for {len(base_jobs_to_run)} job(s)...")
+        job_ids = _initialize_processing_tracker(
+            session_path=session_path, session_name=session_name, base_job_names=base_jobs_to_run
+        )
 
-        for job_name in jobs_to_run:
+        for base_job_name in base_jobs_to_run:
+            full_job_name = f"{session_name}_{base_job_name}"
             _execute_job(
                 session_path=session_path,
-                job_name=job_name,
-                job_id=job_ids[job_name],
+                job_name=full_job_name,
+                job_id=job_ids[full_job_name],
                 workers=workers,
                 tracker=tracker,
             )
