@@ -8,7 +8,7 @@ from pathlib import Path  # noqa: TC003
 from numba import njit  # type: ignore[import-untyped]
 import numpy as np
 import polars as pl
-from numpy.typing import NDArray  # noqa: TC002
+from numpy.typing import NDArray  # noqa: TC002 - Required at runtime for Numba type introspection
 from sl_shared_assets import (
     SessionData,
     GasPuffTrial,
@@ -60,13 +60,13 @@ def _prepare_motif_data(
 
     # Calculates total size needed to represent all motifs in an array.
     total_size: int = sum(len(motif) for motif in trial_motifs)
-    num_motifs: int = len(trial_motifs)
+    motif_count: int = len(trial_motifs)
 
     # Creates arrays with specified dtypes.
     motifs_flat: NDArray[np.uint8] = np.zeros(total_size, dtype=np.uint8)
-    motif_starts: NDArray[np.int32] = np.zeros(num_motifs, dtype=np.int32)
-    motif_lengths: NDArray[np.int32] = np.zeros(num_motifs, dtype=np.int32)
-    motif_indices: NDArray[np.int32] = np.zeros(num_motifs, dtype=np.int32)
+    motif_starts: NDArray[np.int32] = np.zeros(motif_count, dtype=np.int32)
+    motif_lengths: NDArray[np.int32] = np.zeros(motif_count, dtype=np.int32)
+    motif_indices: NDArray[np.int32] = np.zeros(motif_count, dtype=np.int32)
 
     # Fills the arrays
     current_pos: int = 0
@@ -238,7 +238,6 @@ def _decompose_multiple_cue_sequences_into_trials(
                 f"{remaining_sequence.tolist()}"
             )
             console.error(message=message, error=RuntimeError)
-            raise RuntimeError(message)
 
         # Extracts trial indices for this sequence
         sequence_trial_indices = trial_indices_array[:trial_count].tolist()
