@@ -3,7 +3,7 @@ microcontrollers (hardware modules) used in the Sun lab.
 """
 
 from enum import IntEnum
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 from pathlib import Path  # noqa: TC003
 from collections.abc import Callable  # noqa: TC003
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -11,16 +11,16 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 import numpy as np
 import polars as pl
-from numpy.typing import NDArray  # noqa: TC002
-from sl_shared_assets import SessionData, MesoscopeHardwareState
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+from sl_shared_assets import SessionData, MesoscopeHardwareState, interpolate_data
 from ataraxis_base_utilities import LogLevel, console
 from ataraxis_communication_interface import (
     ExtractedModuleData,
     ExtractedMessageData,
     extract_logged_hardware_module_data,
 )
-
-from .utilities import interpolate_data
 
 
 class MicrocontrollerLogIds(IntEnum):
@@ -76,19 +76,19 @@ def _parse_encoder_data(
         cw_data = (ExtractedMessageData(timestamp=first_timestamp + 1, command=np.uint8(52), data=np.float64(0)),)
 
     # Pre-creates the output arrays, based on the number of recorded CW and CCW displacements.
-    n_ccw = len(ccw_data)
-    n_cw = len(cw_data)
-    total_length = n_ccw + n_cw
+    ccw_count = len(ccw_data)
+    cw_count = len(cw_data)
+    total_length = ccw_count + cw_count
     timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
     displacements: NDArray[np.float64] = np.empty(total_length, dtype=np.float64)
 
     # Processes CCW rotations (Code 51). CCW rotation is interpreted as positive displacement
-    timestamps[:n_ccw] = np.array([msg.timestamp for msg in ccw_data], dtype=np.uint64)
-    displacements[:n_ccw] = np.array([msg.data for msg in ccw_data], dtype=np.float64)
+    timestamps[:ccw_count] = np.array([msg.timestamp for msg in ccw_data], dtype=np.uint64)
+    displacements[:ccw_count] = np.array([msg.data for msg in ccw_data], dtype=np.float64)
 
     # Processes CW rotations (Code 52). CW rotation is interpreted as negative displacement
-    timestamps[n_ccw:] = np.array([msg.timestamp for msg in cw_data], dtype=np.uint64)
-    displacements[n_ccw:] = -np.array([msg.data for msg in cw_data], dtype=np.float64)
+    timestamps[ccw_count:] = np.array([msg.timestamp for msg in cw_data], dtype=np.uint64)
+    displacements[ccw_count:] = -np.array([msg.data for msg in cw_data], dtype=np.float64)
 
     # Sorts both arrays based on timestamps.
     sort_indices = np.argsort(timestamps)
@@ -142,19 +142,19 @@ def _parse_ttl_data(extracted_module_data: ExtractedModuleData, output_file: Pat
 
     # Pre-creates the storage numpy arrays for both message types. Timestamps use uint64 datatype, and the trigger
     # values are boolean.
-    n_on = len(on_data)
-    n_off = len(off_data)
-    total_length = n_on + n_off
+    on_count = len(on_data)
+    off_count = len(off_data)
+    total_length = on_count + off_count
     timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
     triggers: NDArray[np.uint8] = np.empty(total_length, dtype=np.uint8)
 
     # Extracts ON (Code 51) trigger codes. Statically assigns the value '1' to denote ON signals.
-    timestamps[:n_on] = np.array([msg.timestamp for msg in on_data], dtype=np.uint64)
-    triggers[:n_on] = 1  # All ON signals
+    timestamps[:on_count] = np.array([msg.timestamp for msg in on_data], dtype=np.uint64)
+    triggers[:on_count] = 1  # All ON signals
 
     # Extracts OFF (Code 52) trigger codes.
-    timestamps[n_on:] = np.array([msg.timestamp for msg in off_data], dtype=np.uint64)
-    triggers[n_on:] = 0  # All OFF signals
+    timestamps[on_count:] = np.array([msg.timestamp for msg in off_data], dtype=np.uint64)
+    triggers[on_count:] = 0  # All OFF signals
 
     # Sorts both arrays based on the timestamps, so that the data is in the chronological order.
     sort_indices = np.argsort(timestamps)
@@ -211,22 +211,22 @@ def _parse_brake_data(
     # Pre-creates the storage numpy arrays for both message types. Timestamps use uint64 datatype. Although trigger
     # values are boolean, they are translated into the actual torque applied by the brake in Newton centimeters and
     # stored as float64 values.
-    n_engaged = len(engaged_data)
-    n_disengaged = len(disengaged_data)
-    total_length = n_engaged + n_disengaged
+    engaged_count = len(engaged_data)
+    disengaged_count = len(disengaged_data)
+    total_length = engaged_count + disengaged_count
     timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
     torques: NDArray[np.float64] = np.empty(total_length, dtype=np.float64)
 
     # Processes Engaged (code 51) triggers. When the motor is engaged, it applies the maximum possible torque to
     # the brake.
-    timestamps[:n_engaged] = np.array([msg.timestamp for msg in engaged_data], dtype=np.uint64)
-    torques[:n_engaged] = maximum_brake_strength  # Broadcasting scalar value
+    timestamps[:engaged_count] = np.array([msg.timestamp for msg in engaged_data], dtype=np.uint64)
+    torques[:engaged_count] = maximum_brake_strength  # Broadcasting scalar value
 
     # Processes Disengaged (code 52) triggers. Contrary to naive expectation, the torque of a disengaged brake is
     # NOT zero. Instead, it is at least the same as the minimum brake strength, likely larger due to all mechanical
     # couplings in the system.
-    timestamps[n_engaged:] = np.array([msg.timestamp for msg in disengaged_data], dtype=np.uint64)
-    torques[n_engaged:] = minimum_brake_strength  # Broadcasting scalar value
+    timestamps[engaged_count:] = np.array([msg.timestamp for msg in disengaged_data], dtype=np.uint64)
+    torques[engaged_count:] = minimum_brake_strength  # Broadcasting scalar value
 
     # Sorts both arrays based on timestamps.
     sort_indices = np.argsort(timestamps)
@@ -293,9 +293,9 @@ def _parse_valve_data(
     # Pre-creates the storage numpy arrays for both message types. Timestamps use uint64 datatype. Although valve
     # trigger values are boolean, they are translated into the total volume of water, in microliters, dispensed to the
     # animal at each time-point and store that value as a float64.
-    n_on = len(open_data)
-    n_off = len(closed_data)
-    total_length = n_on + n_off
+    open_count = len(open_data)
+    closed_count = len(closed_data)
+    total_length = open_count + closed_count
     timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
     volume: NDArray[np.float64] = np.empty(total_length, dtype=np.float64)
 
@@ -305,12 +305,12 @@ def _parse_valve_data(
     # Open/Close cycle duration into the dispensed volume.
 
     # Extracts Open (Code 51) trigger codes. Statically assigns the value '1' to denote Open signals.
-    timestamps[:n_on] = np.array([msg.timestamp for msg in open_data], dtype=np.uint64)
-    volume[:n_on] = 1  # Open state
+    timestamps[:open_count] = np.array([msg.timestamp for msg in open_data], dtype=np.uint64)
+    volume[:open_count] = 1  # Open state
 
     # Extracts Closed (Code 52) trigger codes.
-    timestamps[n_on:] = np.array([msg.timestamp for msg in closed_data], dtype=np.uint64)
-    volume[n_on:] = 0  # Closed state
+    timestamps[open_count:] = np.array([msg.timestamp for msg in closed_data], dtype=np.uint64)
+    volume[open_count:] = 0  # Closed state
 
     # Sorts both arrays based on timestamps.
     sort_indices = np.argsort(timestamps)
@@ -345,19 +345,19 @@ def _parse_valve_data(
     tone_on_data = event_data.get(np.uint8(54), ())
     tone_off_data = event_data.get(np.uint8(55), ())  # The empty default is to appease mypy
 
-    tone_on_n = len(tone_on_data)
-    tone_off_n = len(tone_off_data)
-    tone_length = tone_on_n + tone_off_n
+    tone_on_count = len(tone_on_data)
+    tone_off_count = len(tone_off_data)
+    tone_length = tone_on_count + tone_off_count
     tone_timestamps: NDArray[np.uint64] = np.empty(tone_length, dtype=np.uint64)
     tone_states: NDArray[np.uint8] = np.empty(tone_length, dtype=np.uint8)
 
     # Extracts ON (Code 54) Tone codes. Statically assigns the value '1' to denote On signals.
-    tone_timestamps[:tone_on_n] = np.array([msg.timestamp for msg in tone_on_data], dtype=np.uint64)
-    tone_states[:tone_on_n] = 1
+    tone_timestamps[:tone_on_count] = np.array([msg.timestamp for msg in tone_on_data], dtype=np.uint64)
+    tone_states[:tone_on_count] = 1
 
     # Extracts OFF (Code 55) trigger codes.
-    tone_timestamps[tone_on_n:] = np.array([msg.timestamp for msg in tone_off_data], dtype=np.uint64)
-    tone_states[tone_on_n:] = 0
+    tone_timestamps[tone_on_count:] = np.array([msg.timestamp for msg in tone_off_data], dtype=np.uint64)
+    tone_states[tone_on_count:] = 0
 
     # Sorts both arrays based on timestamps.
     sort_indices = np.argsort(tone_timestamps)
@@ -430,19 +430,19 @@ def _parse_gas_puff_data(extracted_module_data: ExtractedModuleData, output_file
         return
 
     # Pre-creates the storage numpy arrays for both message types.
-    n_on = len(open_data)
-    n_off = len(closed_data)
-    total_length = n_on + n_off
+    open_count = len(open_data)
+    closed_count = len(closed_data)
+    total_length = open_count + closed_count
     timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
     states: NDArray[np.uint8] = np.empty(total_length, dtype=np.uint8)
 
     # Extracts Open (Code 51) states.
-    timestamps[:n_on] = np.array([msg.timestamp for msg in open_data], dtype=np.uint64)
-    states[:n_on] = 1  # Open state
+    timestamps[:open_count] = np.array([msg.timestamp for msg in open_data], dtype=np.uint64)
+    states[:open_count] = 1  # Open state
 
     # Extracts Closed (Code 52) states.
-    timestamps[n_on:] = np.array([msg.timestamp for msg in closed_data], dtype=np.uint64)
-    states[n_on:] = 0  # Closed state
+    timestamps[open_count:] = np.array([msg.timestamp for msg in closed_data], dtype=np.uint64)
+    states[open_count:] = 0  # Closed state
 
     # Sorts both arrays based on timestamps.
     sort_indices = np.argsort(timestamps)
@@ -495,11 +495,11 @@ def _parse_lick_data(extracted_module_data: ExtractedModuleData, output_file: Pa
     # Unlike the other parsing methods, this one will always work as expected since it only deals with one code and
     # that code is guaranteed to be received for each runtime.
 
-    # Extract timestamps and voltage levels. Timestamps use uint64 datatype. Lick sensor
+    # Extracts timestamps and voltage levels. Timestamps use uint64 datatype. Lick sensor
     # voltage levels come in as uint16, but they are later used to generate a binary uint8 lick classification mask.
     voltage_data = event_data[np.uint8(51)]
-    timestamps = np.array([msg.timestamp for msg in voltage_data], dtype=np.uint64)
-    voltages = np.array([msg.data for msg in voltage_data], dtype=np.uint16)
+    timestamps: NDArray[np.uint64] = np.array([msg.timestamp for msg in voltage_data], dtype=np.uint64)
+    voltages: NDArray[np.uint16] = np.array([msg.data for msg in voltage_data], dtype=np.uint16)
 
     # Sorts all arrays by timestamp. This is technically not needed as the extracted values are already sorted by
     # timestamp, but this is still done for additional safety.
@@ -559,17 +559,17 @@ def _parse_torque_data(
     # Pre-creates the storage numpy arrays for both message types. Timestamps use uint64 datatype. Although torque
     # values are uint16, they are translated into the actual torque applied by the animal in Newton centimeters and
     # store them as float 64 values.
-    n_ccw = len(ccw_data)
-    n_cw = len(cw_data)
-    total_length = n_ccw + n_cw
+    ccw_count = len(ccw_data)
+    cw_count = len(cw_data)
+    total_length = ccw_count + cw_count
     timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
 
     # Processes CCW torques (Code 51). CCW torque is interpreted as positive torque
-    timestamps[:n_ccw] = np.array([msg.timestamp for msg in ccw_data], dtype=np.uint64)
+    timestamps[:ccw_count] = np.array([msg.timestamp for msg in ccw_data], dtype=np.uint64)
     ccw_values = np.array([msg.data for msg in ccw_data], dtype=np.float64) * torque_per_adc_unit
 
     # Processes CW torques (Code 52). CW torque is interpreted as negative torque
-    timestamps[n_ccw:] = np.array([msg.timestamp for msg in cw_data], dtype=np.uint64)
+    timestamps[ccw_count:] = np.array([msg.timestamp for msg in cw_data], dtype=np.uint64)
     cw_values = -np.array([msg.data for msg in cw_data], dtype=np.float64) * torque_per_adc_unit
 
     # Combine torques into a unified time-based array
@@ -638,19 +638,19 @@ def _parse_screen_data(extracted_module_data: ExtractedModuleData, output_file: 
 
     # Pre-creates the storage numpy arrays for both message types. Timestamps use uint64 datatype, and the trigger
     # values are boolean.
-    n_on = len(on_data)
-    n_off = len(off_data)
-    total_length = n_on + n_off
+    on_count = len(on_data)
+    off_count = len(off_data)
+    total_length = on_count + off_count
     timestamps: NDArray[np.uint64] = np.empty(total_length, dtype=np.uint64)
     triggers: NDArray[np.uint8] = np.empty(total_length, dtype=np.uint8)
 
     # Extracts ON (Code 51) trigger codes. Statically assigns the value '1' to denote ON signals.
-    timestamps[:n_on] = np.array([msg.timestamp for msg in on_data], dtype=np.uint64)
-    triggers[:n_on] = 1
+    timestamps[:on_count] = np.array([msg.timestamp for msg in on_data], dtype=np.uint64)
+    triggers[:on_count] = 1
 
     # Extracts OFF (Code 52) trigger codes.
-    timestamps[n_on:] = np.array([msg.timestamp for msg in off_data], dtype=np.uint64)
-    triggers[n_on:] = 0
+    timestamps[on_count:] = np.array([msg.timestamp for msg in off_data], dtype=np.uint64)
+    triggers[on_count:] = 0
 
     # Sorts both arrays based on the timestamps, so that the data is in the chronological order.
     sort_indices = np.argsort(timestamps)
@@ -670,11 +670,11 @@ def _parse_screen_data(extracted_module_data: ExtractedModuleData, output_file: 
 
     # Builds an array of screen states. Starts with the initial screen state and then flips the state for each
     # consecutive timestamp matching a rising edge of the toggle pulse.
-    n_states = len(screen_timestamps)
-    screen_states = np.empty(n_states, dtype=np.uint8)
+    state_count = len(screen_timestamps)
+    screen_states = np.empty(state_count, dtype=np.uint8)
     screen_states[0] = initially_on
-    if n_states > 1:
-        screen_states[1:] = (initially_on + np.arange(1, n_states)) % 2
+    if state_count > 1:
+        screen_states[1:] = (initially_on + np.arange(1, state_count)) % 2
 
     # Creates a Polars DataFrame with the processed data
     module_dataframe = pl.DataFrame(
@@ -1060,7 +1060,7 @@ def process_microcontroller_data(
     # Loads the hardware state configuration
     hardware_state = MesoscopeHardwareState.from_yaml(session.raw_data.hardware_state_path)
 
-    console.echo(f"Extracting microcontroller hardware module data from the '{log_id}' log file...")
+    console.echo(message=f"Extracting microcontroller hardware module data from the '{log_id}' log file...")
 
     # Depending on the target log ID, calls the appropriate extraction function.
     if log_id == MicrocontrollerLogIds.ACTOR:
