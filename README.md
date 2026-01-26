@@ -35,7 +35,7 @@ ___
 - [Versioning](#versioning)
 - [Authors](#authors)
 - [License](#license)
-- [Acknowledgements](#acknowledgments)
+- [Acknowledgments](#acknowledgments)
 
 ___
 

@@ -1,5 +1,6 @@
-"""This module provides the centralized pipeline for processing behavior data acquired in the Sun lab. The pipeline
-supports both local and remote processing modes.
+"""Provides the centralized pipeline for processing behavior data acquired in the Sun lab.
+
+Supports both local and remote processing modes.
 """
 
 from enum import StrEnum
@@ -87,8 +88,8 @@ def _initialize_processing_tracker(
     """Initializes the processing tracker file using the requested job IDs.
 
     Notes:
-        This function is used to process the data in the 'local' processing mode. During remote data processing, the
-        tracker file is pre-generated before submitting the processing jobs to the remote compute server.
+        Used to process the data in the 'local' processing mode. During remote data processing, the tracker file is
+        pre-generated before submitting the processing jobs to the remote compute server.
 
     Args:
         session_path: The path to the session's data directory.

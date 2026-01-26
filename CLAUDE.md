@@ -58,6 +58,46 @@ state to prevent integration errors.
 | `/explore-codebase` | Perform in-depth codebase exploration at session start           |
 | `/sun-lab-style`    | Apply Sun Lab coding conventions (REQUIRED for all code changes) |
 
+## MCP Server
+
+The library includes an MCP server (`sl-behavior mcp`) that exposes behavior data processing tools for AI agents.
+
+### Starting the Server
+
+```bash
+sl-behavior mcp
+```
+
+### Available Tools
+
+| Tool                          | Purpose                                                           |
+|-------------------------------|-------------------------------------------------------------------|
+| `list_available_jobs_tool`    | Discovers which jobs can run based on existing .npz log files     |
+| `get_processing_status_tool`  | Checks processing state (PROCESSING, SUCCEEDED, FAILED, etc.)     |
+| `start_processing_tool`       | Starts processing in background thread, returns immediately       |
+| `check_output_files_tool`     | Verifies .feather output files exist and reports their sizes      |
+
+### Parallel Processing Architecture
+
+The MCP server supports processing multiple sessions in parallel. The `start_processing_tool` launches processing in a
+background thread and returns immediately, allowing agents to start multiple sessions and monitor them independently
+via `get_processing_status_tool`. Module-level state (`_active_sessions`) tracks running threads.
+
+### Claude Desktop Configuration
+
+Add to your MCP configuration file:
+
+```json
+{
+  "mcpServers": {
+    "sl-behavior": {
+      "command": "sl-behavior",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
 ## Project Context
 
 This is **sl-behavior**, a Python library for processing non-visual behavior data acquired in the Sun Lab at Cornell
