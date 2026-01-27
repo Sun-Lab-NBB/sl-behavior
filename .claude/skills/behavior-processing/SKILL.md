@@ -76,14 +76,36 @@ not present, the server is not connected.
 
 ## Available Tools
 
-The MCP server exposes exactly four tools. You MUST use these tools for all processing operations.
+The MCP server exposes five tools. You MUST use these tools for all processing operations.
 
-| Tool                         | Purpose                                                       |
-|------------------------------|---------------------------------------------------------------|
-| `list_available_jobs_tool`   | Discovers which jobs can run based on existing .npz log files |
-| `get_processing_status_tool` | Checks processing state (PROCESSING, SUCCEEDED, FAILED, etc.) |
-| `start_processing_tool`      | Starts processing in background thread, returns immediately   |
-| `check_output_files_tool`    | Verifies .feather output files exist and reports their sizes  |
+| Tool                              | Purpose                                                          |
+|-----------------------------------|------------------------------------------------------------------|
+| `list_available_jobs_tool`        | Discovers which jobs can run based on existing .npz log files    |
+| `get_processing_status_tool`      | Returns formatted status table for a single session              |
+| `get_batch_processing_status_tool`| Returns formatted status table for multiple sessions             |
+| `start_processing_tool`           | Starts processing in background thread, returns immediately      |
+| `check_output_files_tool`         | Verifies .feather output files exist and reports their sizes     |
+
+### Status Tools Output Format
+
+Both `get_processing_status_tool` and `get_batch_processing_status_tool` return pre-formatted ASCII tables:
+
+```
++------------------------+------------+----------+-------------------------+
+|                    Behavior Processing Status                           |
++------------------------+------------+----------+-------------------------+
+| Session                | Status     | Progress | Details                 |
++------------------------+------------+----------+-------------------------+
+| 2024-01-15-session_A   | PROCESSING | 2/6 jobs | Running: body_camera    |
+| 2024-01-15-session_B   | SUCCEEDED  | 6/6 jobs | Complete                |
++------------------------+------------+----------+-------------------------+
+Last updated: 2024-01-15 14:32:15
+```
+
+### Polling Interval
+
+**You MUST NOT poll status more frequently than once every 2 minutes.** Processing typically takes several minutes
+per session. Frequent polling wastes API calls and provides no benefit.
 
 ---
 
@@ -276,6 +298,29 @@ Manages the rotary encoder for tracking animal locomotion.
 
 ## Processing Workflow
 
+### Pre-processing checklist
+
+**You MUST complete ALL items in this checklist BEFORE calling `start_processing_tool`.**
+
+```
+Resource Allocation:
+- [ ] Run `nproc` to check available CPU cores
+- [ ] Calculate max parallel sessions: floor((cpu_count + 15) / 30)
+- [ ] Determine if processing sequentially (1 session) or in parallel (2+ sessions)
+
+Session Discovery:
+- [ ] If path contains multiple sessions, find all session_data.yaml files
+- [ ] Call list_available_jobs_tool for each session to verify available jobs
+
+Processing Start:
+- [ ] Call start_processing_tool respecting calculated parallel capacity
+- [ ] If max_sessions=1: Process sessions sequentially (wait for each to complete)
+- [ ] If max_sessions>1: Start up to max_sessions in parallel
+- [ ] Wait at least 2 minutes between status checks (use get_batch_processing_status_tool for multiple sessions)
+```
+
+---
+
 ### Step 1: Discover Available Jobs
 
 Before starting processing, check which jobs are available for the session:
@@ -426,76 +471,29 @@ You MUST follow these practices when processing multiple sessions:
 
 ---
 
-## Background Monitoring with Task Agents
+## Monitoring Progress
 
-When processing multiple sessions, you SHOULD use a background Task agent to monitor progress and provide formatted
-status updates to the user.
+### Single Session Monitoring
 
-### Spawning a Background Monitor Agent
+For monitoring a single session, call `get_processing_status_tool` with the session path. The tool returns a
+pre-formatted ASCII table.
 
-Use the Task tool with `run_in_background: true` to spawn a monitoring agent:
+### Batch Session Monitoring
 
-```
-Tool: Task
-Input:
-  subagent_type: "general-purpose"
-  run_in_background: true
-  prompt: "Monitor behavior processing status for sessions [list paths]. Poll every 30 seconds and format results."
-  description: "Monitor processing status"
-```
-
-### Status Formatting Requirements
-
-The background monitoring agent MUST format status data as a human-readable table before displaying to the user. Raw
-status output is difficult to parse at a glance.
-
-**Required table format:**
+For monitoring multiple sessions, use `get_batch_processing_status_tool` with a list of session paths. This returns
+a single table showing all sessions, which is more efficient than multiple individual calls.
 
 ```
-+----------------------------------------------------------------------------+
-|                    Behavior Processing Status                              |
-+--------------------------+------------+----------+-------------------------+
-| Session                  | Status     | Progress | Details                 |
-+--------------------------+------------+----------+-------------------------+
-| /data/2024-01-15_mouse1  | PROCESSING | 4/6 jobs | Processing encoder...   |
-| /data/2024-01-15_mouse2  | SUCCEEDED  | 6/6 jobs | Complete                |
-| /data/2024-01-15_mouse3  | FAILED     | 3/6 jobs | Lick processing failed  |
-| /data/2024-01-15_mouse4  | PENDING    | 0/6 jobs | Queued                  |
-+--------------------------+------------+----------+-------------------------+
-Last updated: 2024-01-15 14:32:15
+Tool: get_batch_processing_status_tool
+Input: session_paths = ["/path/to/session_A", "/path/to/session_B", "/path/to/session_C"]
 ```
 
-### Formatting Guidelines
+### Polling Best Practices
 
-1. **Session column**: Show shortened path (last 2-3 components) for readability
-2. **Status column**: Use exact status values (PROCESSING, SUCCEEDED, FAILED, PARTIAL, PENDING, NOT_STARTED)
-3. **Progress column**: Show completed jobs vs total jobs (e.g., "4/6 jobs")
-4. **Details column**: Show current operation for PROCESSING, error summary for FAILED
-5. **Timestamp**: Always include last update time at the bottom
-
-### Example Background Monitor Implementation
-
-The background agent should follow this workflow:
-
-```
-1. Initialize session list and status tracking
-2. Loop until all sessions complete:
-   a. Call get_processing_status_tool for each session
-   b. Parse status responses
-   c. Format as table
-   d. Output formatted table to background preview
-   e. Sleep 30 seconds
-3. Output final summary when all sessions complete
-```
-
-### Reading Background Agent Output
-
-Check the background agent's progress using the Read tool on its output file:
-
-```bash
-# The Task tool returns an output_file path when run_in_background is true
-# Use Read or tail to view the current status
-```
+1. **Minimum interval**: Wait at least 2 minutes between status checks
+2. **Batch checking**: Use `get_batch_processing_status_tool` for multiple sessions instead of individual calls
+3. **Continue other work**: Processing runs in the background; you can perform other tasks while waiting
+4. **Check on completion**: Verify outputs with `check_output_files_tool` after status shows SUCCEEDED
 
 ---
 

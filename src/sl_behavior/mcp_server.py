@@ -181,6 +181,177 @@ def list_available_jobs_tool(session_path: str) -> str:
         return "\n".join(result_lines)
 
 
+def _get_session_status(session_path: Path) -> dict[str, str | int | list[tuple[str, str]]]:
+    """Retrieves the processing status for a single session.
+
+    Args:
+        session_path: The path to the session's data directory.
+
+    Returns:
+        A dictionary containing session_name, status, progress (completed/total), current_job, and job_details.
+    """
+    session_key = str(session_path)
+
+    # Checks if processing is actively running in a background thread.
+    is_active = False
+    if session_key in _active_sessions:
+        thread = _active_sessions[session_key]
+        if thread.is_alive():
+            is_active = True
+        else:
+            del _active_sessions[session_key]
+
+    # Extracts session name from path for display.
+    session_display_name = session_path.name
+
+    # Loads the session data to find the tracker file.
+    session = SessionData.load(session_path=session_path)
+    tracker_path = session.tracking_data.tracking_data_path.joinpath(ProcessingTrackers.BEHAVIOR)
+
+    if not tracker_path.exists():
+        return {
+            "session_name": session_display_name,
+            "status": "NOT_STARTED",
+            "completed": 0,
+            "total": 0,
+            "current_job": "-",
+            "job_details": [],
+        }
+
+    tracker = ProcessingTracker.from_yaml(file_path=tracker_path)
+
+    if not tracker.jobs:
+        return {
+            "session_name": session_display_name,
+            "status": "NOT_STARTED",
+            "completed": 0,
+            "total": 0,
+            "current_job": "-",
+            "job_details": [],
+        }
+
+    # Generates reverse mapping from job_id to base_job_name.
+    session_name = session.session_name
+    id_to_name: dict[str, str] = {}
+    for base_job_name in BehaviorJobNames:
+        full_job_name = f"{session_name}_{base_job_name}"
+        job_id = ProcessingTracker.generate_job_id(session_path=session_path, job_name=full_job_name)
+        id_to_name[job_id] = base_job_name
+
+    # Counts job statuses.
+    succeeded_count = 0
+    failed_count = 0
+    pending_count = 0
+    running_count = 0
+    total_count = len(tracker.jobs)
+    current_job = "-"
+    job_details: list[tuple[str, str]] = []
+
+    for job_id, job_state in tracker.jobs.items():
+        job_name = id_to_name.get(job_id, job_id[:8])
+
+        if job_state.status == ProcessingStatus.SUCCEEDED:
+            succeeded_count += 1
+            job_details.append((job_name, "done"))
+        elif job_state.status == ProcessingStatus.FAILED:
+            failed_count += 1
+            job_details.append((job_name, "failed"))
+        elif job_state.status == ProcessingStatus.RUNNING:
+            running_count += 1
+            current_job = job_name
+            job_details.append((job_name, "running"))
+        else:
+            pending_count += 1
+            job_details.append((job_name, "pending"))
+
+    # Determines overall status.
+    if is_active or running_count > 0:
+        status = "PROCESSING"
+    elif failed_count > 0 and succeeded_count > 0:
+        status = "PARTIAL"
+    elif failed_count > 0:
+        status = "FAILED"
+    elif succeeded_count == total_count:
+        status = "SUCCEEDED"
+    elif pending_count > 0:
+        status = "PENDING"
+    else:
+        status = "UNKNOWN"
+
+    return {
+        "session_name": session_display_name,
+        "status": status,
+        "completed": succeeded_count,
+        "total": total_count,
+        "current_job": current_job,
+        "job_details": job_details,
+    }
+
+
+def _format_status_table(statuses: list[dict[str, str | int | list[tuple[str, str]]]]) -> str:
+    """Formats multiple session statuses as an ASCII table.
+
+    Args:
+        statuses: A list of status dictionaries from _get_session_status.
+
+    Returns:
+        A formatted ASCII table string.
+    """
+    from datetime import datetime
+
+    # Calculates column widths.
+    session_width = max(20, max(len(str(s["session_name"])) for s in statuses) + 2)
+    status_width = 12
+    progress_width = 10
+    details_width = 25
+
+    # Builds header.
+    header_line = f"| {'Session':<{session_width}} | {'Status':<{status_width}} | {'Progress':<{progress_width}} | {'Details':<{details_width}} |"
+    separator = f"+{'-' * (session_width + 2)}+{'-' * (status_width + 2)}+{'-' * (progress_width + 2)}+{'-' * (details_width + 2)}+"
+    title_width = len(separator) - 2
+    title = "Behavior Processing Status"
+    title_line = f"|{title:^{title_width}}|"
+
+    lines = [separator, title_line, separator, header_line, separator]
+
+    # Builds data rows.
+    for status in statuses:
+        session_name = str(status["session_name"])
+        status_str = str(status["status"])
+        completed = status["completed"]
+        total = status["total"]
+        progress = f"{completed}/{total} jobs"
+        current = str(status["current_job"])
+
+        # Generates details string.
+        if status_str == "PROCESSING":
+            details = f"Running: {current}"
+        elif status_str == "SUCCEEDED":
+            details = "Complete"
+        elif status_str == "FAILED":
+            details = "Failed - check logs"
+        elif status_str == "PARTIAL":
+            details = "Some jobs failed"
+        elif status_str == "PENDING":
+            details = "Queued"
+        else:
+            details = "-"
+
+        # Truncates if needed.
+        if len(session_name) > session_width:
+            session_name = session_name[: session_width - 3] + "..."
+        if len(details) > details_width:
+            details = details[: details_width - 3] + "..."
+
+        row = f"| {session_name:<{session_width}} | {status_str:<{status_width}} | {progress:<{progress_width}} | {details:<{details_width}} |"
+        lines.append(row)
+
+    lines.append(separator)
+    lines.append(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    return "\n".join(lines)
+
+
 @mcp.tool()
 def get_processing_status_tool(session_path: str) -> str:
     """Checks the processing status for a session with per-job progress details.
@@ -199,89 +370,58 @@ def get_processing_status_tool(session_path: str) -> str:
         if not path.exists():
             return f"Error: Session path does not exist: {session_path}"
 
-        session_key = str(path)
-
-        # Checks if processing is actively running in a background thread.
-        is_active = False
-        if session_key in _active_sessions:
-            thread = _active_sessions[session_key]
-            if thread.is_alive():
-                is_active = True
-            else:
-                # Thread finished, clean up the reference.
-                del _active_sessions[session_key]
-
-        # Loads the session data to find the tracker file and session name.
-        session = SessionData.load(session_path=path)
-        tracker_path = session.tracking_data.tracking_data_path.joinpath(ProcessingTrackers.BEHAVIOR)
-
-        if not tracker_path.exists():
-            return f"Status: NOT_STARTED | Session: {session_path}"
-
-        # Loads the tracker and analyzes job statuses.
-        tracker = ProcessingTracker.from_yaml(file_path=tracker_path)
-
-        if not tracker.jobs:
-            return f"Status: NOT_STARTED | Session: {session_path}"
-
-        # Generates reverse mapping from job_id to base_job_name for display.
-        session_name = session.session_name
-        id_to_name: dict[str, str] = {}
-        for base_job_name in BehaviorJobNames:
-            full_job_name = f"{session_name}_{base_job_name}"
-            job_id = ProcessingTracker.generate_job_id(session_path=path, job_name=full_job_name)
-            id_to_name[job_id] = base_job_name
-
-        # Counts job statuses and builds per-job details.
-        succeeded_count = 0
-        failed_count = 0
-        pending_count = 0
-        running_count = 0
-        total_count = len(tracker.jobs)
-        job_lines: list[str] = []
-
-        for job_id, job_state in tracker.jobs.items():
-            # Maps job ID back to readable name.
-            job_name = id_to_name.get(job_id, job_id[:8])
-
-            # Counts by status.
-            if job_state.status == ProcessingStatus.SUCCEEDED:
-                succeeded_count += 1
-                indicator = "[+]"
-            elif job_state.status == ProcessingStatus.FAILED:
-                failed_count += 1
-                indicator = "[X]"
-            elif job_state.status == ProcessingStatus.RUNNING:
-                running_count += 1
-                indicator = "[>]"
-            else:
-                pending_count += 1
-                indicator = "[ ]"
-
-            job_lines.append(f"  {indicator} {job_name}")
-
-        # Determines overall status.
-        if is_active or running_count > 0:
-            status = f"PROCESSING ({succeeded_count}/{total_count} complete)"
-        elif failed_count > 0 and succeeded_count > 0:
-            status = f"PARTIAL ({succeeded_count} succeeded, {failed_count} failed)"
-        elif failed_count > 0:
-            status = f"FAILED ({failed_count}/{total_count} failed)"
-        elif succeeded_count == total_count:
-            status = f"SUCCEEDED ({succeeded_count}/{total_count} complete)"
-        elif pending_count > 0:
-            status = f"PENDING ({pending_count}/{total_count} pending)"
-        else:
-            status = "UNKNOWN"
-
-        # Builds the result message.
-        result_lines = [f"Session: {session_path}", f"Status: {status}", "", "Jobs:"]
-        result_lines.extend(job_lines)
+        status = _get_session_status(session_path=path)
+        table = _format_status_table(statuses=[status])
 
     except Exception as e:
         return f"Error: {e}"
     else:
-        return "\n".join(result_lines)
+        return table
+
+
+@mcp.tool()
+def get_batch_processing_status_tool(session_paths: list[str]) -> str:
+    """Checks the processing status for multiple sessions and returns a combined formatted table.
+
+    Polls all specified sessions and displays their status in a single table. This is more efficient than calling
+    get_processing_status_tool multiple times when monitoring a batch of sessions.
+
+    Important:
+        AI agents SHOULD poll status no more frequently than once every 2 minutes to avoid excessive API calls.
+        Processing typically takes several minutes per session depending on data size.
+
+    Args:
+        session_paths: A list of absolute paths to session root data directories.
+
+    Returns:
+        A formatted ASCII table showing the status of all sessions.
+    """
+    if not session_paths:
+        return "Error: No session paths provided"
+
+    statuses: list[dict[str, str | int | list[tuple[str, str]]]] = []
+    errors: list[str] = []
+
+    for session_path in session_paths:
+        try:
+            path = Path(session_path)
+            if not path.exists():
+                errors.append(f"Path not found: {session_path}")
+                continue
+            status = _get_session_status(session_path=path)
+            statuses.append(status)
+        except Exception as e:
+            errors.append(f"Error for {session_path}: {e}")
+
+    if not statuses:
+        return "Error: No valid sessions found.\n" + "\n".join(errors)
+
+    table = _format_status_table(statuses=statuses)
+
+    if errors:
+        table += "\n\nWarnings:\n" + "\n".join(f"  - {err}" for err in errors)
+
+    return table
 
 
 @mcp.tool()

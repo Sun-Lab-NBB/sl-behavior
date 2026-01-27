@@ -108,14 +108,14 @@ sl-forgery library.
 
 ### Key Areas
 
-| Directory/File                 | Purpose                                                              |
-|--------------------------------|----------------------------------------------------------------------|
-| `src/sl_behavior/pipeline.py`  | Central processing orchestration and job management                  |
-| `src/sl_behavior/runtime.py`   | VR system state, runtime task state, and trial sequence extraction   |
-| `src/sl_behavior/microcontrollers.py` | Hardware module data parsing (actor, sensor, encoder)         |
-| `src/sl_behavior/camera.py`    | Camera timestamp extraction                                          |
-| `src/sl_behavior/cli.py`       | CLI entry point for behavior processing commands                     |
-| `src/sl_behavior/utilities.py` | Helper functions for data interpolation                              |
+| Directory/File                        | Purpose                                                            |
+|---------------------------------------|--------------------------------------------------------------------|
+| `src/sl_behavior/pipeline.py`         | Central processing orchestration and job management                |
+| `src/sl_behavior/runtime.py`          | VR system state, runtime task state, and trial sequence extraction |
+| `src/sl_behavior/microcontrollers.py` | Hardware module data parsing (actor, sensor, encoder)              |
+| `src/sl_behavior/camera.py`           | Camera timestamp extraction                                        |
+| `src/sl_behavior/cli.py`              | CLI entry point for behavior processing commands                   |
+| `src/sl_behavior/utilities.py`        | Helper functions for data interpolation                            |
 
 ### Architecture
 
