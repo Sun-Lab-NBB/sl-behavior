@@ -31,6 +31,21 @@ class BehaviorJobNames(StrEnum):
     """The name for the Encoder microcontroller data processing job."""
 
 
+def get_session_root(session: SessionData) -> Path:
+    """Returns the canonical session root path for consistent job ID generation.
+
+    The session root is the parent directory of the raw_data directory. This path format matches what sl-forgery uses
+    when submitting jobs to the remote compute server, ensuring consistent job IDs across local and remote processing.
+
+    Args:
+        session: The loaded SessionData instance.
+
+    Returns:
+        The canonical session root path (parent of raw_data).
+    """
+    return session.raw_data.raw_data_path.parent
+
+
 def _resolve_available_jobs(session_path: Path) -> dict[str, bool]:
     """Detects which processing jobs can run on the session's data based on existing log files.
 
@@ -62,27 +77,30 @@ def _resolve_available_jobs(session_path: Path) -> dict[str, bool]:
     return available_jobs
 
 
-def _generate_job_ids(session_path: Path, session_name: str, base_job_names: list[str]) -> dict[str, str]:
+def _generate_job_ids(session: SessionData, base_job_names: list[str]) -> dict[str, str]:
     """Generates unique processing job identifiers for the specified jobs.
 
+    Uses the canonical session root path (parent of raw_data) to ensure consistent job IDs across local and remote
+    processing modes. This matches the path format used by sl-forgery when submitting jobs to the compute server.
+
     Args:
-        session_path: The path to the session's data directory.
-        session_name: The unique identifier of the session being processed.
+        session: The loaded SessionData instance for the target session.
         base_job_names: The list of base job names (from BehaviorJobNames) for which to generate the IDs.
 
     Returns:
         A dictionary mapping full job names (with session prefix) to their generated job IDs.
     """
+    session_root = get_session_root(session)
+    session_name = session.session_name
     job_ids: dict[str, str] = {}
     for base_job_name in base_job_names:
         full_job_name = f"{session_name}_{base_job_name}"
-        job_ids[full_job_name] = ProcessingTracker.generate_job_id(session_path=session_path, job_name=full_job_name)
+        job_ids[full_job_name] = ProcessingTracker.generate_job_id(session_path=session_root, job_name=full_job_name)
     return job_ids
 
 
 def _initialize_processing_tracker(
     session_path: Path,
-    session_name: str,
     base_job_names: list[str],
 ) -> dict[str, str]:
     """Initializes the processing tracker file using the requested job IDs.
@@ -93,7 +111,6 @@ def _initialize_processing_tracker(
 
     Args:
         session_path: The path to the session's data directory.
-        session_name: The unique identifier of the session being processed.
         base_job_names: The base job names (from BehaviorJobNames) for the processing jobs to track.
 
     Returns:
@@ -106,8 +123,8 @@ def _initialize_processing_tracker(
         file_path=session.tracking_data.tracking_data_path.joinpath(ProcessingTrackers.BEHAVIOR)
     )
 
-    # Generates job IDs for each requested job.
-    job_ids = _generate_job_ids(session_path=session_path, session_name=session_name, base_job_names=base_job_names)
+    # Generates job IDs for each requested job using the canonical session root path.
+    job_ids = _generate_job_ids(session=session, base_job_names=base_job_names)
 
     # Initializes all jobs in the tracker file.
     tracker.initialize_jobs(job_ids=list(job_ids.values()))
@@ -213,9 +230,7 @@ def process_session(
     # Determines the execution mode and resolves job IDs accordingly.
     if job_id is not None:
         # REMOTE mode: Finds the job name matching the provided job_id.
-        all_job_ids = _generate_job_ids(
-            session_path=session_path, session_name=session_name, base_job_names=list(BehaviorJobNames)
-        )
+        all_job_ids = _generate_job_ids(session=session, base_job_names=list(BehaviorJobNames))
         id_to_name: dict[str, str] = {v: k for k, v in all_job_ids.items()}
 
         if job_id not in id_to_name:
@@ -258,9 +273,7 @@ def process_session(
 
         # Initializes the tracker and runs all requested jobs sequentially.
         console.echo(message=f"Initializing processing tracker for {len(base_jobs_to_run)} job(s)...")
-        job_ids = _initialize_processing_tracker(
-            session_path=session_path, session_name=session_name, base_job_names=base_jobs_to_run
-        )
+        job_ids = _initialize_processing_tracker(session_path=session_path, base_job_names=base_jobs_to_run)
 
         for base_job_name in base_jobs_to_run:
             full_job_name = f"{session_name}_{base_job_name}"

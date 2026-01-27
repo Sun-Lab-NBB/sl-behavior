@@ -73,10 +73,8 @@ sl-behavior mcp
 
 | Tool                          | Purpose                                                           |
 |-------------------------------|-------------------------------------------------------------------|
-| `list_available_jobs_tool`    | Discovers which jobs can run based on existing .npz log files     |
 | `start_processing_tool`       | Starts batch processing for one or more sessions with auto-queue  |
 | `get_processing_status_tool`  | Returns status for all sessions being managed (no parameters)     |
-| `check_output_files_tool`     | Verifies .feather output files exist and reports their sizes      |
 
 ### Batch Processing Architecture
 

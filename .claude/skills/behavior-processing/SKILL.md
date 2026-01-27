@@ -69,22 +69,19 @@ Add to your `.mcp.json` file in the project root:
 
 ### Verifying Connection
 
-Before processing, verify the MCP tools are available by checking your tool list. If the four sl-behavior tools
-(`list_available_jobs_tool`, `get_processing_status_tool`, `start_processing_tool`, `check_output_files_tool`) are not
-present, the server is not connected.
+Before processing, verify the MCP tools are available by checking your tool list. If the two sl-behavior tools
+(`start_processing_tool`, `get_processing_status_tool`) are not present, the server is not connected.
 
 ---
 
 ## Available Tools
 
-The MCP server exposes four tools. You MUST use these tools for all processing operations.
+The MCP server exposes two tools. You MUST use these tools for all processing operations.
 
-| Tool                        | Purpose                                                            |
-|-----------------------------|--------------------------------------------------------------------|
-| `list_available_jobs_tool`  | Discovers which jobs can run based on existing .npz log files      |
-| `start_processing_tool`     | Starts processing for one or more sessions (with automatic queuing)|
-| `get_processing_status_tool`| Returns status for all sessions being managed                      |
-| `check_output_files_tool`   | Verifies .feather output files exist and reports their sizes       |
+| Tool                         | Purpose                                                             |
+|------------------------------|---------------------------------------------------------------------|
+| `start_processing_tool`      | Starts processing for one or more sessions (with automatic queuing) |
+| `get_processing_status_tool` | Returns status for all sessions being managed                       |
 
 ---
 
@@ -152,108 +149,59 @@ The MCP server exposes four tools. You MUST use these tools for all processing o
 }
 ```
 
-### `list_available_jobs_tool`
-
-**Input:**
-```python
-{"session_path": "/path/to/session"}
-```
-
-**Output:**
-```python
-{
-    "session_path": "/path/to/session",
-    "available": ["runtime_processing", "face_camera_processing", ...],
-    "not_available": []
-}
-```
-
-### `check_output_files_tool`
-
-**Input:**
-```python
-{"session_path": "/path/to/session"}
-```
-
-**Output:**
-```python
-{
-    "output_directory": "/path/to/session/processed_data/behavior_data",
-    "file_count": 14,
-    "files": [
-        {"name": "encoder_data.feather", "size_bytes": 1048576, "size_formatted": "1.0 MB"},
-        {"name": "lick_data.feather", "size_bytes": 58777, "size_formatted": "57.4 KB"},
-        ...
-    ]
-}
-```
-
 ---
 
 ## Formatting Status as a Table
 
-When presenting status to the user, format the data as a clear table. Use the summary for overview and sessions list
-for details.
+When presenting status to the user, you MUST format the data as a clear table after each 5-minute status check. The
+table MUST include these three columns for each session:
 
-**Example formatted output:**
+1. **Full Session Name** - The complete session identifier (e.g., `2024-01-15-10-30-00-123456`)
+2. **Job Completion State** - Progress as `completed/total` jobs (e.g., `3/6`)
+3. **Currently Executing Job** - The job currently running, or `-` if queued/completed
+
+**Required table format:**
 
 ```
-Behavior Processing Status
-==========================
+| Session                      | Completion | Current Job              |
+|------------------------------|------------|--------------------------|
+| 2024-01-15-10-30-00-123456   | 3/6        | body_camera_processing   |
+| 2024-01-15-11-45-00-234567   | 0/6        | (queued)                 |
+| 2024-01-16-09-00-00-111111   | 6/6        | -                        |
+```
+
+**Full example with summary:**
+
+```
+**Processing Status Check**
 
 Summary: 5/30 succeeded | 1 processing | 24 queued | 0 failed
 
- #  Session                        Status      Progress  Current Job
---- ------------------------------ ----------- --------- ---------------------------
- 1  2024-01-15-10-30-00-123456     PROCESSING  3/6 jobs  body_camera_processing
- 2  2024-01-15-11-45-00-234567     QUEUED      -         -
- 3  2024-01-15-12-00-00-345678     QUEUED      -         -
- 4  2024-01-15-13-15-00-456789     QUEUED      -         -
- 5  2024-01-15-14-30-00-567890     QUEUED      -         -
-...
-26  2024-01-16-09-00-00-111111     SUCCEEDED   6/6 jobs  -
-27  2024-01-16-10-15-00-222222     SUCCEEDED   6/6 jobs  -
-28  2024-01-16-11-30-00-333333     SUCCEEDED   6/6 jobs  -
-29  2024-01-16-12-45-00-444444     SUCCEEDED   6/6 jobs  -
-30  2024-01-16-14-00-00-555555     SUCCEEDED   6/6 jobs  -
+| Session                      | Completion | Current Job              |
+|------------------------------|------------|--------------------------|
+| 2024-01-15-10-30-00-123456   | 3/6        | body_camera_processing   |
+| 2024-01-15-11-45-00-234567   | 0/6        | (queued)                 |
+| 2024-01-15-12-00-00-345678   | 0/6        | (queued)                 |
+| 2024-01-16-09-00-00-111111   | 6/6        | -                        |
+| 2024-01-16-10-15-00-222222   | 6/6        | -                        |
 ```
 
-**Compact format for many sessions:**
-
-When there are many queued sessions, summarize them:
-
-```
-Behavior Processing Status
-==========================
-
-Summary: 5/30 succeeded | 1 processing | 24 queued | 0 failed
-
-Active:
-  1. 2024-01-15-10-30-00-123456: PROCESSING (3/6 jobs) - body_camera_processing
-
-Queued: 24 sessions waiting
-
-Completed:
-  - 2024-01-16-09-00-00-111111: SUCCEEDED (6/6 jobs)
-  - 2024-01-16-10-15-00-222222: SUCCEEDED (6/6 jobs)
-  - 2024-01-16-11-30-00-333333: SUCCEEDED (6/6 jobs)
-  - 2024-01-16-12-45-00-444444: SUCCEEDED (6/6 jobs)
-  - 2024-01-16-14-00-00-555555: SUCCEEDED (6/6 jobs)
-```
+**Important:** Always use the FULL session name from the session path, not a truncated version. The session name is
+typically found in the path (e.g., `/home/data/test_run/2024-01-15-10-30-00-123456/raw_data` → session name is
+`2024-01-15-10-30-00-123456`).
 
 ---
 
 ## Processing Workflow
 
-The workflow is simple: start processing, then check status when the user asks.
+The workflow is simple: start processing, then automatically check status every 5 minutes until completion.
 
 ### Workflow Overview
 
 1. **Discover sessions** → Find all session paths to process
 2. **Start processing** → Call `start_processing_tool` with all session paths
 3. **Inform user** → Report how many started immediately vs queued
-4. **Check status on demand** → When user asks, call `get_processing_status_tool` and format as table
-5. **Verify outputs** → After completion, optionally verify output files
+4. **Monitor every 5 minutes** → Check status and display table until all sessions complete
 
 ### Step 1: Discover Sessions
 
@@ -287,28 +235,28 @@ After starting, report the batch status:
 
 > "Started processing 30 sessions. With 32 CPU cores, 1 session runs at a time (28 workers).
 > 1 session started immediately, 29 queued. Sessions will process automatically.
-> Let me know when you'd like to check status."
+> I will check status every 5 minutes and display an updated table."
 
-### Step 4: Check Status (User-Initiated)
+### Step 4: Monitor Status Every 5 Minutes
 
-When the user asks for status, call `get_processing_status_tool` (no parameters needed) and format the result as a
-table:
+You MUST check processing status every 5 minutes until all sessions complete. Do NOT wait for the user to request
+status updates.
+
+**Monitoring workflow:**
+
+1. Call `get_processing_status_tool` (no parameters needed)
+2. Format and display the status table (see "Formatting Status as a Table" above)
+3. If any sessions are still PROCESSING or QUEUED, wait 5 minutes and repeat
+4. Stop monitoring only when all sessions show SUCCEEDED or FAILED
 
 ```
 Tool: get_processing_status_tool
 Input: (none)
 ```
 
-Format the returned data clearly (see "Formatting Status as a Table" above).
-
-### Step 5: Verify Outputs (Optional)
-
-After all sessions complete, verify outputs for any session:
-
-```
-Tool: check_output_files_tool
-Input: session_path = "/path/to/session"
-```
+**Important:** When the status summary shows `processing: 0` and `queued: 0`, all sessions have completed. Report the
+final status table and stop monitoring. Do NOT perform any additional verification steps - if processing reports
+completion, the outputs are ready.
 
 ---
 
