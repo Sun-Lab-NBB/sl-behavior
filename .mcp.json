@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "sl-behavior": {
+      "type": "stdio",
+      "command": "sl-behavior",
+      "args": [
+        "mcp"
+      ],
+      "env": {}
+    }
+  }
+}

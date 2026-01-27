@@ -3,18 +3,18 @@
 requires = ["hatchling>=1,<2"]
 build-backend = "hatchling.build"
 
-# Project metdata section. Provides the genral ID information about the project.
+# Project metadata section. Provides the general ID information about the project.
 [project]
 name = "sl-behavior"
-version = "4.0.1rc1"
+version = "4.1.0"
 description = "Provides tools for processing non-visual behavior data acquired in the Sun (NeuroAI) lab."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.14,<3.15"
 authors = [
-    {name = "Ivan Kondratyev"},
-    {name = "Kushaan Gupta"},
-    {name = "Natalie Yeung"}
+    { name = "Ivan Kondratyev" },
+    { name = "Kushaan Gupta" },
+    { name = "Natalie Yeung" }
 ]
 maintainers = [
     { name = "Ivan Kondratyev", email = "ik278@cornell.edu" },
@@ -43,7 +43,7 @@ dependencies = [
     "click>=8,<9",
     "numpy>=2,<3",
     "numba>=0.63,<1",
-    "intel-cmplr-lib-rt>=2025,<2026; sys_platform != 'darwin'",
+    "intel-cmplr-lib-rt>=2025,<2026; platform_system != 'Darwin'",
     "ataraxis-base-utilities>=5,<6",
     "ataraxis-video-system>=2,<3",
     "ataraxis-communication-interface>=4,<5",
@@ -51,6 +51,8 @@ dependencies = [
     "polars>=1,<2",
     "pyarrow>=22,<23",
     "sl-shared-assets>=7,<8",
+    "mcp>=1,<2",
+    "httpx>=0.27,<1",
 ]
 
 [project.urls]
@@ -76,7 +78,7 @@ dev = [
 
 # Exports the CLI for processing behavior data
 [project.scripts]
-sl-behavior = "sl_behavior.cli:behavior"
+sl-behavior = "sl_behavior.cli:cli"
 
 # Specifies files that should not be included in the source-code distribution but are also not part of gitignore.
 [tool.hatch.build.targets.sdist]
@@ -84,7 +86,7 @@ exclude = [".github", "recipe"]
 
 # Specifies the library structure.
 [tool.hatch.build.targets.wheel]
-packages = ["src/sl_behavior", "examples"]
+packages = ["src/sl_behavior"]
 
 # Ruff Configuration.
 [tool.ruff]
