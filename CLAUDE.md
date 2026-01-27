@@ -74,15 +74,16 @@ sl-behavior mcp
 | Tool                          | Purpose                                                           |
 |-------------------------------|-------------------------------------------------------------------|
 | `list_available_jobs_tool`    | Discovers which jobs can run based on existing .npz log files     |
-| `get_processing_status_tool`  | Checks processing state (PROCESSING, SUCCEEDED, FAILED, etc.)     |
-| `start_processing_tool`       | Starts processing in background thread, returns immediately       |
+| `start_processing_tool`       | Starts batch processing for one or more sessions with auto-queue  |
+| `get_processing_status_tool`  | Returns status for all sessions being managed (no parameters)     |
 | `check_output_files_tool`     | Verifies .feather output files exist and reports their sizes      |
 
-### Parallel Processing Architecture
+### Batch Processing Architecture
 
-The MCP server supports processing multiple sessions in parallel. The `start_processing_tool` launches processing in a
-background thread and returns immediately, allowing agents to start multiple sessions and monitor them independently
-via `get_processing_status_tool`. Module-level state (`_active_sessions`) tracks running threads.
+The MCP server manages batch processing with automatic queuing. The `start_processing_tool` accepts a list of session
+paths, calculates optimal parallelization based on CPU cores, and queues sessions beyond the parallel capacity. A
+manager thread automatically starts queued sessions as earlier ones complete. The `get_processing_status_tool` returns
+status for all managed sessions (active, queued, and completed) without requiring session paths as input.
 
 ### Claude Desktop Configuration
 

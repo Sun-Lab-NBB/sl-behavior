@@ -30,9 +30,10 @@ tools are the only supported interface for agentic behavior data processing.
 The MCP tools provide:
 
 1. **Background processing** - Jobs run in separate threads, allowing parallel session processing
-2. **Status tracking** - Real-time progress monitoring via the ProcessingTracker system
-3. **Error isolation** - Failures in one job don't crash the entire pipeline
-4. **Resource management** - Automatic CPU core allocation and cleanup
+2. **Automatic queuing** - Sessions beyond parallel capacity are queued and started automatically
+3. **Status tracking** - Real-time progress monitoring via the ProcessingTracker system
+4. **Error isolation** - Failures in one job don't crash the entire pipeline
+5. **Resource management** - Automatic CPU core allocation and cleanup
 
 Direct Python calls bypass these capabilities and will fail in agentic contexts.
 
@@ -69,43 +70,278 @@ Add to your `.mcp.json` file in the project root:
 ### Verifying Connection
 
 Before processing, verify the MCP tools are available by checking your tool list. If the four sl-behavior tools
-(`list_available_jobs_tool`, `get_processing_status_tool`, `start_processing_tool`, `check_output_files_tool`) are
-not present, the server is not connected.
+(`list_available_jobs_tool`, `get_processing_status_tool`, `start_processing_tool`, `check_output_files_tool`) are not
+present, the server is not connected.
 
 ---
 
 ## Available Tools
 
-The MCP server exposes five tools. You MUST use these tools for all processing operations.
+The MCP server exposes four tools. You MUST use these tools for all processing operations.
 
-| Tool                              | Purpose                                                          |
-|-----------------------------------|------------------------------------------------------------------|
-| `list_available_jobs_tool`        | Discovers which jobs can run based on existing .npz log files    |
-| `get_processing_status_tool`      | Returns formatted status table for a single session              |
-| `get_batch_processing_status_tool`| Returns formatted status table for multiple sessions             |
-| `start_processing_tool`           | Starts processing in background thread, returns immediately      |
-| `check_output_files_tool`         | Verifies .feather output files exist and reports their sizes     |
+| Tool                        | Purpose                                                            |
+|-----------------------------|--------------------------------------------------------------------|
+| `list_available_jobs_tool`  | Discovers which jobs can run based on existing .npz log files      |
+| `start_processing_tool`     | Starts processing for one or more sessions (with automatic queuing)|
+| `get_processing_status_tool`| Returns status for all sessions being managed                      |
+| `check_output_files_tool`   | Verifies .feather output files exist and reports their sizes       |
 
-### Status Tools Output Format
+---
 
-Both `get_processing_status_tool` and `get_batch_processing_status_tool` return pre-formatted ASCII tables:
+## Tool Input/Output Formats
+
+### `start_processing_tool`
+
+**Input:**
+```python
+{
+    "session_paths": ["/path/to/session1", "/path/to/session2", ...],  # Required, minimum 1
+    "process_runtime": True,              # Optional, default True
+    "process_face_camera": True,          # Optional, default True
+    "process_body_camera": True,          # Optional, default True
+    "process_actor_microcontroller": True,   # Optional, default True
+    "process_sensor_microcontroller": True,  # Optional, default True
+    "process_encoder_microcontroller": True, # Optional, default True
+    "workers": -1                         # Optional, -1 for automatic
+}
+```
+
+**Output:**
+```python
+{
+    "started": True,
+    "total_sessions": 30,
+    "immediate_start": 1,      # Sessions started immediately
+    "queued": 29,              # Sessions waiting in queue
+    "max_parallel": 1,         # Max concurrent sessions based on CPU
+    "workers_per_session": 28  # CPU cores allocated per session
+}
+```
+
+### `get_processing_status_tool`
+
+**Input:** None (no parameters required)
+
+**Output:**
+```python
+{
+    "sessions": [
+        {
+            "session_name": "2024-01-15-10-30-00-123456",
+            "status": "PROCESSING",  # PROCESSING, QUEUED, SUCCEEDED, FAILED, PARTIAL
+            "completed": 3,          # Completed jobs
+            "total": 6,              # Total jobs
+            "current_job": "body_camera_processing",
+            "job_details": [
+                ("runtime_processing", "done"),
+                ("face_camera_processing", "done"),
+                ("body_camera_processing", "running"),
+                ("actor_microcontroller_processing", "pending"),
+                ...
+            ]
+        },
+        ...
+    ],
+    "summary": {
+        "total": 30,
+        "succeeded": 5,
+        "failed": 0,
+        "processing": 1,
+        "queued": 24
+    }
+}
+```
+
+### `list_available_jobs_tool`
+
+**Input:**
+```python
+{"session_path": "/path/to/session"}
+```
+
+**Output:**
+```python
+{
+    "session_path": "/path/to/session",
+    "available": ["runtime_processing", "face_camera_processing", ...],
+    "not_available": []
+}
+```
+
+### `check_output_files_tool`
+
+**Input:**
+```python
+{"session_path": "/path/to/session"}
+```
+
+**Output:**
+```python
+{
+    "output_directory": "/path/to/session/processed_data/behavior_data",
+    "file_count": 14,
+    "files": [
+        {"name": "encoder_data.feather", "size_bytes": 1048576, "size_formatted": "1.0 MB"},
+        {"name": "lick_data.feather", "size_bytes": 58777, "size_formatted": "57.4 KB"},
+        ...
+    ]
+}
+```
+
+---
+
+## Formatting Status as a Table
+
+When presenting status to the user, format the data as a clear table. Use the summary for overview and sessions list
+for details.
+
+**Example formatted output:**
 
 ```
-+------------------------+------------+----------+-------------------------+
-|                    Behavior Processing Status                           |
-+------------------------+------------+----------+-------------------------+
-| Session                | Status     | Progress | Details                 |
-+------------------------+------------+----------+-------------------------+
-| 2024-01-15-session_A   | PROCESSING | 2/6 jobs | Running: body_camera    |
-| 2024-01-15-session_B   | SUCCEEDED  | 6/6 jobs | Complete                |
-+------------------------+------------+----------+-------------------------+
-Last updated: 2024-01-15 14:32:15
+Behavior Processing Status
+==========================
+
+Summary: 5/30 succeeded | 1 processing | 24 queued | 0 failed
+
+ #  Session                        Status      Progress  Current Job
+--- ------------------------------ ----------- --------- ---------------------------
+ 1  2024-01-15-10-30-00-123456     PROCESSING  3/6 jobs  body_camera_processing
+ 2  2024-01-15-11-45-00-234567     QUEUED      -         -
+ 3  2024-01-15-12-00-00-345678     QUEUED      -         -
+ 4  2024-01-15-13-15-00-456789     QUEUED      -         -
+ 5  2024-01-15-14-30-00-567890     QUEUED      -         -
+...
+26  2024-01-16-09-00-00-111111     SUCCEEDED   6/6 jobs  -
+27  2024-01-16-10-15-00-222222     SUCCEEDED   6/6 jobs  -
+28  2024-01-16-11-30-00-333333     SUCCEEDED   6/6 jobs  -
+29  2024-01-16-12-45-00-444444     SUCCEEDED   6/6 jobs  -
+30  2024-01-16-14-00-00-555555     SUCCEEDED   6/6 jobs  -
 ```
 
-### Polling Interval
+**Compact format for many sessions:**
 
-**You MUST NOT poll status more frequently than once every 2 minutes.** Processing typically takes several minutes
-per session. Frequent polling wastes API calls and provides no benefit.
+When there are many queued sessions, summarize them:
+
+```
+Behavior Processing Status
+==========================
+
+Summary: 5/30 succeeded | 1 processing | 24 queued | 0 failed
+
+Active:
+  1. 2024-01-15-10-30-00-123456: PROCESSING (3/6 jobs) - body_camera_processing
+
+Queued: 24 sessions waiting
+
+Completed:
+  - 2024-01-16-09-00-00-111111: SUCCEEDED (6/6 jobs)
+  - 2024-01-16-10-15-00-222222: SUCCEEDED (6/6 jobs)
+  - 2024-01-16-11-30-00-333333: SUCCEEDED (6/6 jobs)
+  - 2024-01-16-12-45-00-444444: SUCCEEDED (6/6 jobs)
+  - 2024-01-16-14-00-00-555555: SUCCEEDED (6/6 jobs)
+```
+
+---
+
+## Processing Workflow
+
+The workflow is simple: start processing, then check status when the user asks.
+
+### Workflow Overview
+
+1. **Discover sessions** → Find all session paths to process
+2. **Start processing** → Call `start_processing_tool` with all session paths
+3. **Inform user** → Report how many started immediately vs queued
+4. **Check status on demand** → When user asks, call `get_processing_status_tool` and format as table
+5. **Verify outputs** → After completion, optionally verify output files
+
+### Step 1: Discover Sessions
+
+If given a parent directory containing multiple sessions, find all session paths:
+
+```bash
+# Find all sessions by looking for session_data.yaml files
+find /path/to/data -name "session_data.yaml" -exec dirname {} \;
+```
+
+Or use glob patterns to find session directories.
+
+### Step 2: Start Processing
+
+Call `start_processing_tool` with ALL session paths at once:
+
+```
+Tool: start_processing_tool
+Input: session_paths = ["/path/session1", "/path/session2", ..., "/path/session30"]
+```
+
+The tool will:
+- Calculate max parallel sessions based on CPU cores
+- Start up to max_parallel sessions immediately
+- Queue the rest for automatic processing
+- Return immediately with confirmation
+
+### Step 3: Inform User
+
+After starting, report the batch status:
+
+> "Started processing 30 sessions. With 32 CPU cores, 1 session runs at a time (28 workers).
+> 1 session started immediately, 29 queued. Sessions will process automatically.
+> Let me know when you'd like to check status."
+
+### Step 4: Check Status (User-Initiated)
+
+When the user asks for status, call `get_processing_status_tool` (no parameters needed) and format the result as a
+table:
+
+```
+Tool: get_processing_status_tool
+Input: (none)
+```
+
+Format the returned data clearly (see "Formatting Status as a Table" above).
+
+### Step 5: Verify Outputs (Optional)
+
+After all sessions complete, verify outputs for any session:
+
+```
+Tool: check_output_files_tool
+Input: session_path = "/path/to/session"
+```
+
+---
+
+## Resource Management
+
+### CPU Core Allocation
+
+The system automatically calculates optimal resource allocation:
+
+- **Workers per session**: `min(cpu_count - 4, 30)` cores
+- **Max parallel sessions**: `floor((cpu_count + 15) / 30)`
+
+### Example Allocations
+
+| CPU Cores | Max Parallel | Workers/Session | Behavior                               |
+|-----------|--------------|-----------------|----------------------------------------|
+| 16        | 1            | 12              | Sequential processing                  |
+| 32        | 1            | 28              | Sequential, 28 workers per session     |
+| 64        | 2            | 30              | 2 concurrent sessions, 30 workers each |
+| 96        | 3            | 30              | 3 concurrent sessions                  |
+| 128       | 4            | 30              | 4 concurrent sessions                  |
+
+### Processing 30 Sessions on 32 Cores
+
+With 32 cores:
+- Max parallel: `floor((32 + 15) / 30) = 1`
+- Workers per session: `min(32 - 4, 30) = 28`
+
+The 30 sessions will process sequentially:
+1. Session 1 starts immediately with 28 workers
+2. When session 1 completes, session 2 starts automatically
+3. Continues until all 30 complete
+4. No user intervention needed between sessions
 
 ---
 
@@ -296,226 +532,25 @@ Manages the rotary encoder for tracking animal locomotion.
 
 ---
 
-## Processing Workflow
-
-### Pre-processing checklist
-
-**You MUST complete ALL items in this checklist BEFORE calling `start_processing_tool`.**
-
-```
-Resource Allocation:
-- [ ] Run `nproc` to check available CPU cores
-- [ ] Calculate max parallel sessions: floor((cpu_count + 15) / 30)
-- [ ] Determine if processing sequentially (1 session) or in parallel (2+ sessions)
-
-Session Discovery:
-- [ ] If path contains multiple sessions, find all session_data.yaml files
-- [ ] Call list_available_jobs_tool for each session to verify available jobs
-
-Processing Start:
-- [ ] Call start_processing_tool respecting calculated parallel capacity
-- [ ] If max_sessions=1: Process sessions sequentially (wait for each to complete)
-- [ ] If max_sessions>1: Start up to max_sessions in parallel
-- [ ] Wait at least 2 minutes between status checks (use get_batch_processing_status_tool for multiple sessions)
-```
-
----
-
-### Step 1: Discover Available Jobs
-
-Before starting processing, check which jobs are available for the session:
-
-```
-Tool: list_available_jobs_tool
-Input: session_path = "/path/to/session"
-```
-
-Returns which log files exist and which jobs can run.
-
-### Step 2: Start Processing
-
-Start processing in the background. The tool returns immediately, allowing parallel session processing:
-
-```
-Tool: start_processing_tool
-Input:
-  session_path = "/path/to/session"
-  process_runtime = true
-  process_face_camera = true
-  process_body_camera = true
-  process_actor_microcontroller = true
-  process_sensor_microcontroller = true
-  process_encoder_microcontroller = true
-  workers = -1
-```
-
-Setting `workers = -1` uses all available CPU cores. Set to `1` for sequential processing.
-
-### Step 3: Monitor Progress
-
-Check processing status periodically:
-
-```
-Tool: get_processing_status_tool
-Input: session_path = "/path/to/session"
-```
-
-Status values:
-
-| Status        | Meaning                                             |
-|---------------|-----------------------------------------------------|
-| `PROCESSING`  | Background thread is actively processing            |
-| `SUCCEEDED`   | All jobs completed successfully                     |
-| `FAILED`      | One or more jobs failed                             |
-| `PARTIAL`     | Some jobs succeeded, some failed                    |
-| `PENDING`     | Jobs are queued but not yet started                 |
-| `NOT_STARTED` | No tracker file exists (processing never initiated) |
-
-### Step 4: Verify Outputs
-
-After processing completes, verify the output files:
-
-```
-Tool: check_output_files_tool
-Input: session_path = "/path/to/session"
-```
-
-Lists all `.feather` files in the processed data directory with their sizes.
-
----
-
-## Resource Management
-
-### CPU Core Allocation
-
-Each session processing job uses a **maximum of 30 CPU cores** when `workers = -1` is specified. This limit ensures
-efficient resource utilization without overwhelming the system.
-
-### Checking Available Cores
-
-Before starting processing, you MUST check the machine's CPU count to determine optimal parallelization:
-
-```bash
-# Check CPU count on Linux/macOS
-nproc  # or: python -c "import os; print(os.cpu_count())"
-```
-
-### Calculating Parallel Session Capacity
-
-Prefer fully saturating sessions (30 cores each) over running multiple partially-saturated sessions. Use 15 cores
-(half maximum capacity) as the minimum threshold for spawning an additional session:
-
-```
-max_parallel_sessions = floor((cpu_count + 15) / 30)
-```
-
-| CPU Cores | Max Parallel Sessions | Core Distribution                           |
-|-----------|-----------------------|---------------------------------------------|
-| < 30      | 1                     | Single session, partial core usage          |
-| 30-44     | 1                     | Single session fully saturated              |
-| 45-59     | 2                     | One full (30) + one partial (15-29) session |
-| 60-74     | 2                     | Two fully saturated sessions                |
-| 75-89     | 3                     | Two full + one partial session              |
-| 90-104    | 3                     | Three fully saturated sessions              |
-| 105-119   | 4                     | Three full + one partial session            |
-| 120+      | 4+                    | Continues pattern                           |
-
-### When to Spawn Multiple Sessions
-
-You SHOULD spawn multiple session processing instances when:
-
-1. **Sufficient cores available**: `cpu_count >= 45` allows 2+ parallel sessions
-2. **Multiple sessions to process**: You have a batch of sessions waiting
-3. **No other CPU-intensive tasks**: The machine is not running other heavy workloads
-
-You SHOULD NOT spawn multiple sessions when:
-
-1. **Limited cores**: `cpu_count < 45` means the second session would be severely under-resourced
-2. **Memory constraints**: Each session requires ~4-8 GB RAM for large datasets
-3. **Disk I/O bottleneck**: Slow storage limits parallel processing benefit
-
----
-
-## Parallel Processing
-
-The MCP server supports processing multiple sessions in parallel. Each session runs in its own background thread.
-
-### Starting Multiple Sessions
-
-You can start processing for multiple sessions without waiting for each to complete:
-
-```
-1. start_processing_tool(session_path="/data/session_A") -> "Processing started..."
-2. start_processing_tool(session_path="/data/session_B") -> "Processing started..."
-3. start_processing_tool(session_path="/data/session_C") -> "Processing started..."
-```
-
-### Monitoring Multiple Sessions
-
-Check status for each session independently:
-
-```
-get_processing_status_tool(session_path="/data/session_A") -> "Status: PROCESSING..."
-get_processing_status_tool(session_path="/data/session_B") -> "Status: SUCCEEDED..."
-get_processing_status_tool(session_path="/data/session_C") -> "Status: PROCESSING..."
-```
-
-### Best Practices for Parallel Processing
-
-You MUST follow these practices when processing multiple sessions:
-
-1. Start all sessions before checking any status to maximize parallelism.
-2. Poll status at reasonable intervals (every 30-60 seconds for large sessions).
-3. Continue with other tasks while processing runs in the background.
-4. Verify outputs for all sessions after all processing completes.
-
----
-
-## Monitoring Progress
-
-### Single Session Monitoring
-
-For monitoring a single session, call `get_processing_status_tool` with the session path. The tool returns a
-pre-formatted ASCII table.
-
-### Batch Session Monitoring
-
-For monitoring multiple sessions, use `get_batch_processing_status_tool` with a list of session paths. This returns
-a single table showing all sessions, which is more efficient than multiple individual calls.
-
-```
-Tool: get_batch_processing_status_tool
-Input: session_paths = ["/path/to/session_A", "/path/to/session_B", "/path/to/session_C"]
-```
-
-### Polling Best Practices
-
-1. **Minimum interval**: Wait at least 2 minutes between status checks
-2. **Batch checking**: Use `get_batch_processing_status_tool` for multiple sessions instead of individual calls
-3. **Continue other work**: Processing runs in the background; you can perform other tasks while waiting
-4. **Check on completion**: Verify outputs with `check_output_files_tool` after status shows SUCCEEDED
-
----
-
 ## Error Handling
 
 ### Common Errors
 
-| Error Message                    | Cause                                  | Resolution                              |
-|----------------------------------|----------------------------------------|-----------------------------------------|
-| "Session path does not exist"    | Invalid or mistyped session path       | Verify the path exists                  |
-| "Processing already in progress" | Session is already being processed     | Wait for current processing to complete |
-| "No output directory found"      | Session has not been processed yet     | Run processing first                    |
-| "No .feather files found"        | Processing failed or has not completed | Check processing status for errors      |
+| Error Message                              | Cause                                  | Resolution                              |
+|--------------------------------------------|----------------------------------------|-----------------------------------------|
+| "At least one session path is required"    | Empty session_paths list               | Provide at least one session path       |
+| "No valid session paths provided"          | All paths invalid or don't exist       | Verify paths exist                      |
+| "Processing already in progress"           | Batch already running                  | Wait for current batch to complete      |
+| "Session path does not exist"              | Invalid path for output check          | Verify the path exists                  |
 
 ### Handling Failures
 
-If processing fails (status = FAILED or PARTIAL):
+If processing fails for some sessions (check status shows FAILED or PARTIAL):
 
-1. Check the processing tracker file for detailed error information.
-2. Verify input .npz files are not corrupted.
-3. Ensure sufficient disk space for output files.
-4. Re-run processing for failed jobs only by setting other job flags to `false`.
+1. Note which sessions failed from the status output
+2. Wait for the current batch to complete
+3. Start a new batch with only the failed sessions
+4. Check the processing tracker YAML files for detailed error information
 
 ---
 
