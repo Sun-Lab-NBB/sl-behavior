@@ -69,23 +69,49 @@ Add to your `.mcp.json` file in the project root:
 
 ### Verifying Connection
 
-Before processing, verify the MCP tools are available by checking your tool list. If the two sl-behavior tools
-(`start_processing_tool`, `get_processing_status_tool`) are not present, the server is not connected.
+Before processing, verify the MCP tools are available by checking your tool list. If the sl-behavior tools
+(`discover_sessions_tool`, `start_processing_tool`, `get_processing_status_tool`) are not present, the server is not
+connected.
 
 ---
 
 ## Available Tools
 
-The MCP server exposes two tools. You MUST use these tools for all processing operations.
+The MCP server exposes three tools. You MUST use these tools for all processing operations.
 
 | Tool                         | Purpose                                                             |
 |------------------------------|---------------------------------------------------------------------|
+| `discover_sessions_tool`     | Finds sessions under a root directory, returns session root paths   |
 | `start_processing_tool`      | Starts processing for one or more sessions (with automatic queuing) |
 | `get_processing_status_tool` | Returns status for all sessions being managed                       |
 
 ---
 
 ## Tool Input/Output Formats
+
+### `discover_sessions_tool`
+
+**Input:**
+```python
+{
+    "root_directory": "/path/to/data"  # Required, directory to search
+}
+```
+
+**Output:**
+```python
+{
+    "sessions": [
+        "/path/to/data/animal1/2024-01-15-10-30-00-123456",
+        "/path/to/data/animal1/2024-01-16-09-00-00-234567",
+        ...
+    ],
+    "count": 30
+}
+```
+
+The tool searches for `session_data.yaml` files recursively and returns the resolved session root paths (parent of
+`raw_data`). These paths can be passed directly to `start_processing_tool`.
 
 ### `start_processing_tool`
 
@@ -205,14 +231,14 @@ The workflow is simple: start processing, then automatically check status every 
 
 ### Step 1: Discover Sessions
 
-If given a parent directory containing multiple sessions, find all session paths:
+If given a parent directory containing multiple sessions, use the `discover_sessions_tool` to find all session paths:
 
-```bash
-# Find all sessions by looking for session_data.yaml files
-find /path/to/data -name "session_data.yaml" -exec dirname {} \;
+```
+Tool: discover_sessions_tool
+Input: root_directory = "/path/to/data"
 ```
 
-Or use glob patterns to find session directories.
+The tool searches for `session_data.yaml` files and returns the resolved session root paths.
 
 ### Step 2: Start Processing
 

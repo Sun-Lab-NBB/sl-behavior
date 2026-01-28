@@ -73,6 +73,7 @@ sl-behavior mcp
 
 | Tool                          | Purpose                                                           |
 |-------------------------------|-------------------------------------------------------------------|
+| `discover_sessions_tool`      | Finds sessions under a root directory, returns session root paths |
 | `start_processing_tool`       | Starts batch processing for one or more sessions with auto-queue  |
 | `get_processing_status_tool`  | Returns status for all sessions being managed (no parameters)     |
 

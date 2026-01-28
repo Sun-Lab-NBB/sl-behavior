@@ -10,8 +10,10 @@ from os import cpu_count
 from typing import Any, Literal
 from pathlib import Path
 from threading import Lock, Thread
+import traceback
 from dataclasses import field, dataclass
 
+from ataraxis_time import PrecisionTimer, TimerPrecisions
 from sl_shared_assets import SessionData, ProcessingStatus, ProcessingTracker, ProcessingTrackers
 from mcp.server.fastmcp import FastMCP
 
@@ -41,6 +43,8 @@ class _BatchState:
     active: dict[str, Thread] = field(default_factory=dict)
     completed: set[str] = field(default_factory=set)
     failed: set[str] = field(default_factory=set)
+    errors: dict[str, list[str]] = field(default_factory=dict)
+    """Maps session keys to lists of error messages for failed jobs."""
     job_flags: dict[str, bool] = field(default_factory=dict)
     workers: int = -1
     max_parallel: int = 1
@@ -122,7 +126,10 @@ def _execute_single_job(
             tracker=tracker,
         )
     except Exception as error:
-        return base_job_name, False, str(error)
+        # Extracts the last frame from the traceback for context.
+        frames = traceback.extract_tb(error.__traceback__)
+        location = f"{frames[-1].filename}:{frames[-1].lineno}" if frames else "unknown"
+        return base_job_name, False, f"{type(error).__name__}: {error} ({location})"
     else:
         return base_job_name, True, None
 
@@ -131,7 +138,7 @@ def _run_session_processing(
     session_path: Path,
     job_flags: dict[str, bool],
     workers: int,
-) -> bool:
+) -> tuple[bool, list[str]]:
     """Executes the processing pipeline for a single session.
 
     Runs jobs sequentially, with each job receiving all allocated CPU cores.
@@ -142,8 +149,10 @@ def _run_session_processing(
         workers: The number of CPU cores to use for each job.
 
     Returns:
-        True if all jobs succeeded, False if any failed.
+        A tuple containing a boolean indicating overall success and a list of error messages for any failed jobs.
     """
+    job_errors: list[str] = []
+
     try:
         # Loads the session data and initializes the processing tracker.
         session = SessionData.load(session_path=session_path)
@@ -163,7 +172,7 @@ def _run_session_processing(
         ]
 
         if not base_jobs_to_run:
-            return True  # No jobs to run is considered success.
+            return True, []  # No jobs to run is considered success.
 
         # Initializes the tracker file and gets job IDs.
         job_ids = _initialize_processing_tracker(session_path=session_path, base_job_names=base_jobs_to_run)
@@ -171,7 +180,7 @@ def _run_session_processing(
         # Executes jobs sequentially, each with full worker allocation.
         all_succeeded = True
         for base_job_name in base_jobs_to_run:
-            _, succeeded, _ = _execute_single_job(
+            job_name, succeeded, error_msg = _execute_single_job(
                 session_path=session_path,
                 base_job_name=base_job_name,
                 session_name=session_name,
@@ -181,11 +190,15 @@ def _run_session_processing(
             )
             if not succeeded:
                 all_succeeded = False
+                job_errors.append(f"{job_name}: {error_msg}")
 
-    except Exception:
-        return False
+    except Exception as error:
+        frames = traceback.extract_tb(error.__traceback__)
+        location = f"{frames[-1].filename}:{frames[-1].lineno}" if frames else "unknown"
+        job_errors.append(f"Session setup failed - {type(error).__name__}: {error} ({location})")
+        return False, job_errors
     else:
-        return all_succeeded
+        return all_succeeded, job_errors
 
 
 def _session_worker(session_path: Path, job_flags: dict[str, bool], workers: int) -> None:
@@ -196,10 +209,8 @@ def _session_worker(session_path: Path, job_flags: dict[str, bool], workers: int
         job_flags: Dictionary mapping job names to whether they should run.
         workers: The number of CPU cores to use for each job.
     """
-    global _batch_state
-
     session_key = str(session_path)
-    success = _run_session_processing(session_path=session_path, job_flags=job_flags, workers=workers)
+    success, errors = _run_session_processing(session_path=session_path, job_flags=job_flags, workers=workers)
 
     if _batch_state is not None:
         with _batch_state.lock:
@@ -209,6 +220,8 @@ def _session_worker(session_path: Path, job_flags: dict[str, bool], workers: int
                 _batch_state.completed.add(session_key)
             else:
                 _batch_state.failed.add(session_key)
+                if errors:
+                    _batch_state.errors[session_key] = errors
 
 
 def _batch_manager() -> None:
@@ -216,7 +229,7 @@ def _batch_manager() -> None:
 
     Runs continuously until all sessions are processed (queue empty and no active sessions).
     """
-    global _batch_state
+    timer = PrecisionTimer(precision=TimerPrecisions.MILLISECOND)
 
     if _batch_state is None:
         return
@@ -250,9 +263,7 @@ def _batch_manager() -> None:
                 _batch_state.active[session_key] = thread
 
         # Sleeps briefly before checking again.
-        import time
-
-        time.sleep(1.0)
+        timer.delay(delay=1000, allow_sleep=True)
 
 
 def _get_session_status(session_path: Path) -> dict[str, Any]:
@@ -262,17 +273,16 @@ def _get_session_status(session_path: Path) -> dict[str, Any]:
         session_path: The path to the session's data directory.
 
     Returns:
-        A dictionary containing session_name, status, progress (completed/total), current_job, and job_details.
+        A dictionary containing session_name, status, progress (completed/total), current_job, job_details, and errors.
     """
-    global _batch_state
-
     session_key = str(session_path)
 
-    # Checks batch state for queue/active/completed status.
+    # Checks batch state for queue/active/completed status and errors.
     is_queued = False
     is_active = False
     is_completed = False
     is_failed = False
+    session_errors: list[str] = []
 
     if _batch_state is not None:
         with _batch_state.lock:
@@ -280,6 +290,7 @@ def _get_session_status(session_path: Path) -> dict[str, Any]:
             is_active = session_key in _batch_state.active and _batch_state.active[session_key].is_alive()
             is_completed = session_key in _batch_state.completed
             is_failed = session_key in _batch_state.failed
+            session_errors = _batch_state.errors.get(session_key, [])
 
     # Extracts session name from path for display.
     session_display_name = session_path.name
@@ -381,7 +392,7 @@ def _get_session_status(session_path: Path) -> dict[str, Any]:
     else:
         status = "UNKNOWN"
 
-    return {
+    result: dict[str, Any] = {
         "session_name": session_display_name,
         "status": status,
         "completed": succeeded_count,
@@ -389,6 +400,59 @@ def _get_session_status(session_path: Path) -> dict[str, Any]:
         "current_job": current_job,
         "job_details": job_details,
     }
+
+    if session_errors:
+        result["errors"] = session_errors
+
+    return result
+
+
+@mcp.tool()
+def discover_sessions_tool(root_directory: str) -> dict[str, Any]:
+    """Discovers all sessions in a directory tree that may need processing.
+
+    Searches for session_data.yaml files to identify session directories. For each found session, resolves and returns
+    the canonical session root path (parent of raw_data). These paths can be passed directly to start_processing_tool.
+
+    Args:
+        root_directory: The absolute path to the root directory to search.
+
+    Returns:
+        A dictionary containing a list of discovered session root paths and the total count.
+    """
+    root_path = Path(root_directory)
+
+    if not root_path.exists():
+        return {"error": f"Directory does not exist: {root_directory}"}
+
+    if not root_path.is_dir():
+        return {"error": f"Path is not a directory: {root_directory}"}
+
+    # Searches for session_data.yaml files as the heuristic for finding sessions.
+    session_paths: list[str] = []
+    errors: list[str] = []
+
+    for yaml_file in root_path.rglob("session_data.yaml"):
+        try:
+            # Loads the session and resolves to the canonical root path.
+            session = SessionData.load(session_path=yaml_file.parent)
+            session_root = get_session_root(session=session)
+            session_paths.append(str(session_root))
+        except Exception as error:
+            errors.append(f"{yaml_file.parent}: {error}")
+
+    # Sorts paths for consistent output.
+    session_paths.sort()
+
+    result: dict[str, Any] = {
+        "sessions": session_paths,
+        "count": len(session_paths),
+    }
+
+    if errors:
+        result["errors"] = errors
+
+    return result
 
 
 @mcp.tool()
@@ -403,8 +467,6 @@ def get_processing_status_tool() -> dict[str, Any]:
         - sessions: List of status dictionaries for each session (active, queued, completed)
         - summary: Overall progress statistics (total, completed, failed, processing, queued)
     """
-    global _batch_state
-
     if _batch_state is None:
         return {
             "sessions": [],
@@ -420,24 +482,14 @@ def get_processing_status_tool() -> dict[str, Any]:
     session_statuses: list[dict[str, Any]] = []
 
     with _batch_state.lock:
-        # Collects all session paths.
-        all_sessions: list[Path] = []
-
-        # Adds active sessions.
-        for session_key in _batch_state.active:
-            all_sessions.append(Path(session_key))
-
-        # Adds queued sessions.
+        # Collects all session paths from active, queued, completed, and failed sets.
+        all_sessions: list[Path] = [Path(key) for key in _batch_state.active]
         all_sessions.extend(_batch_state.queued)
+        all_sessions.extend(Path(key) for key in _batch_state.completed)
 
-        # Adds completed sessions.
-        for session_key in _batch_state.completed:
-            all_sessions.append(Path(session_key))
-
-        # Adds failed sessions.
-        for session_key in _batch_state.failed:
-            if Path(session_key) not in all_sessions:
-                all_sessions.append(Path(session_key))
+        # Adds failed sessions that aren't already included.
+        existing_keys = {str(path) for path in all_sessions}
+        all_sessions.extend(Path(key) for key in _batch_state.failed if key not in existing_keys)
 
         queued_count = len(_batch_state.queued)
         processing_count = len(_batch_state.active)
