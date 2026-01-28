@@ -225,6 +225,19 @@ typically found in the path (e.g., `/home/data/test_run/2024-01-15-10-30-00-1234
 
 The workflow starts processing in the background and allows the user to check status on demand.
 
+### Pre-Processing Checklist
+
+**You MUST complete this checklist before calling `start_processing_tool`.** Do not skip any step.
+
+```
+- [ ] Session discovery complete (used discover_sessions_tool or received explicit paths)
+- [ ] Asked user about CPU core allocation (see Step 2 below)
+- [ ] Received user response confirming worker count (number or "all"/automatic)
+- [ ] Confirmed which job types to process (if user has specific requirements)
+```
+
+**STOP**: If any checkbox is incomplete, do not proceed to `start_processing_tool`. Complete the missing steps first.
+
 ### Workflow Overview
 
 1. **Discover sessions** → Find all session paths to process
