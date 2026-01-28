@@ -14,7 +14,7 @@ import traceback
 from dataclasses import field, dataclass
 
 from ataraxis_time import PrecisionTimer, TimerPrecisions
-from sl_shared_assets import SessionData, ProcessingStatus, ProcessingTracker, ProcessingTrackers
+from sl_shared_assets import SessionData, SessionTypes, ProcessingStatus, ProcessingTracker, ProcessingTrackers
 from mcp.server.fastmcp import FastMCP
 
 from .pipeline import (
@@ -33,6 +33,13 @@ _RESERVED_CORES: int = 4
 
 # Maximum CPU cores any single job can use.
 _MAXIMUM_JOB_CORES: int = 30
+
+# Session types that contain processable behavior data.
+_PROCESSABLE_SESSION_TYPES: frozenset[SessionTypes] = frozenset({
+    SessionTypes.LICK_TRAINING,
+    SessionTypes.RUN_TRAINING,
+    SessionTypes.MESOSCOPE_EXPERIMENT,
+})
 
 
 @dataclass
@@ -430,6 +437,7 @@ def discover_sessions_tool(root_directory: str) -> dict[str, Any]:
 
     # Searches for session_data.yaml files as the heuristic for finding sessions.
     session_paths: list[str] = []
+    skipped: list[str] = []
     errors: list[str] = []
 
     for yaml_file in root_path.rglob("session_data.yaml"):
@@ -437,6 +445,12 @@ def discover_sessions_tool(root_directory: str) -> dict[str, Any]:
             # Loads the session and resolves to the canonical root path.
             session = SessionData.load(session_path=yaml_file.parent)
             session_root = get_session_root(session=session)
+
+            # Filters out sessions that don't contain processable behavior data.
+            if session.session_type not in _PROCESSABLE_SESSION_TYPES:
+                skipped.append(f"{session_root} ({session.session_type})")
+                continue
+
             session_paths.append(str(session_root))
         except Exception as error:
             errors.append(f"{yaml_file.parent}: {error}")
@@ -448,6 +462,9 @@ def discover_sessions_tool(root_directory: str) -> dict[str, Any]:
         "sessions": session_paths,
         "count": len(session_paths),
     }
+
+    if skipped:
+        result["skipped"] = skipped
 
     if errors:
         result["errors"] = errors
