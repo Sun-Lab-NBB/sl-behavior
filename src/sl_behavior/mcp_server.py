@@ -35,11 +35,13 @@ _RESERVED_CORES: int = 4
 _MAXIMUM_JOB_CORES: int = 30
 
 # Session types that contain processable behavior data.
-_PROCESSABLE_SESSION_TYPES: frozenset[SessionTypes] = frozenset({
-    SessionTypes.LICK_TRAINING,
-    SessionTypes.RUN_TRAINING,
-    SessionTypes.MESOSCOPE_EXPERIMENT,
-})
+_PROCESSABLE_SESSION_TYPES: frozenset[SessionTypes] = frozenset(
+    {
+        SessionTypes.LICK_TRAINING,
+        SessionTypes.RUN_TRAINING,
+        SessionTypes.MESOSCOPE_EXPERIMENT,
+    }
+)
 
 
 @dataclass

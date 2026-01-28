@@ -14,11 +14,13 @@ from .runtime import process_runtime_data
 from .microcontrollers import MicrocontrollerLogIds, process_microcontroller_data
 
 # Session types that contain processable behavior data.
-_PROCESSABLE_SESSION_TYPES: frozenset[SessionTypes] = frozenset({
-    SessionTypes.LICK_TRAINING,
-    SessionTypes.RUN_TRAINING,
-    SessionTypes.MESOSCOPE_EXPERIMENT,
-})
+_PROCESSABLE_SESSION_TYPES: frozenset[SessionTypes] = frozenset(
+    {
+        SessionTypes.LICK_TRAINING,
+        SessionTypes.RUN_TRAINING,
+        SessionTypes.MESOSCOPE_EXPERIMENT,
+    }
+)
 
 
 class BehaviorJobNames(StrEnum):
