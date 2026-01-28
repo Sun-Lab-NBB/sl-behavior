@@ -8,6 +8,13 @@ Command Line Interfaces
    :prog: sl-behavior
    :nested: full
 
+Processing Pipeline
+===================
+.. automodule:: sl_behavior.pipeline
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Camera Data Processing
 ======================
 .. automodule:: sl_behavior.camera

@@ -4,7 +4,7 @@ import importlib_metadata
 # -- Project information -----------------------------------------------------
 project = 'sl-behavior'
 # noinspection PyShadowingBuiltins
-copyright = '2025, Sun (NeuroAI) lab'
+copyright = '2026, Sun (NeuroAI) lab'
 authors = ['Ivan Kondratyev', 'Kushaan Gupta', 'Natalie Yeung']
 # Extracts the project version from the .toml file.
 release = importlib_metadata.version("sl-behavior")
