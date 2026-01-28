@@ -1,22 +1,26 @@
 """Provides the MCP server for agentic behavior data processing.
 
-Exposes tools that enable AI agents to discover available processing jobs, start processing in the background, monitor
-processing status, and verify output files.
+Exposes tools that enable AI agents to discover available processing jobs, start processing in the background, and
+monitor processing status.
 """
 
 from __future__ import annotations
 
 from os import cpu_count
-from typing import Literal
+from typing import Any, Literal
 from pathlib import Path
-from threading import Thread
+from threading import Lock, Thread
+import traceback
+from dataclasses import field, dataclass
 
+from ataraxis_time import PrecisionTimer, TimerPrecisions
 from sl_shared_assets import SessionData, ProcessingStatus, ProcessingTracker, ProcessingTrackers
 from mcp.server.fastmcp import FastMCP
 
 from .pipeline import (
     BehaviorJobNames,
     _execute_job,
+    get_session_root,
     _resolve_available_jobs,
     _initialize_processing_tracker,
 )
@@ -24,17 +28,32 @@ from .pipeline import (
 # Initializes the MCP server with JSON response mode for structured output.
 mcp = FastMCP(name="sl-behavior", json_response=True)
 
-# Module-level state for tracking active processing sessions.
-_active_sessions: dict[str, Thread] = {}
-
-# Bytes per kilobyte, used for file size formatting.
-_BYTES_PER_KB: int = 1024
-
 # CPU cores reserved for system operations.
 _RESERVED_CORES: int = 4
 
 # Maximum CPU cores any single job can use.
 _MAXIMUM_JOB_CORES: int = 30
+
+
+@dataclass
+class _BatchState:
+    """Tracks state for batch processing operations."""
+
+    queued: list[Path] = field(default_factory=list)
+    active: dict[str, Thread] = field(default_factory=dict)
+    completed: set[str] = field(default_factory=set)
+    failed: set[str] = field(default_factory=set)
+    errors: dict[str, list[str]] = field(default_factory=dict)
+    """Maps session keys to lists of error messages for failed jobs."""
+    job_flags: dict[str, bool] = field(default_factory=dict)
+    workers: int = -1
+    max_parallel: int = 1
+    lock: Lock = field(default_factory=Lock)
+    manager_thread: Thread | None = None
+
+
+# Module-level batch processing state.
+_batch_state: _BatchState | None = None
 
 
 def _calculate_job_workers(requested_workers: int) -> int:
@@ -58,6 +77,21 @@ def _calculate_job_workers(requested_workers: int) -> int:
         return _RESERVED_CORES  # Fallback if cpu_count() returns None.
 
     return min(max(1, available_cores - _RESERVED_CORES), _MAXIMUM_JOB_CORES)
+
+
+def _calculate_max_parallel_sessions() -> int:
+    """Calculates the maximum number of sessions that can run in parallel.
+
+    Uses the formula: floor((cpu_count + 15) / 30) to determine optimal parallelization.
+
+    Returns:
+        The maximum number of parallel sessions.
+    """
+    available_cores = cpu_count()
+    if available_cores is None:
+        return 1
+
+    return max(1, (available_cores + 15) // _MAXIMUM_JOB_CORES)
 
 
 def _execute_single_job(
@@ -92,27 +126,32 @@ def _execute_single_job(
             tracker=tracker,
         )
     except Exception as error:
-        return base_job_name, False, str(error)
+        # Extracts the last frame from the traceback for context.
+        frames = traceback.extract_tb(error.__traceback__)
+        location = f"{frames[-1].filename}:{frames[-1].lineno}" if frames else "unknown"
+        return base_job_name, False, f"{type(error).__name__}: {error} ({location})"
     else:
         return base_job_name, True, None
 
 
-def _run_processing_in_background(
+def _run_session_processing(
     session_path: Path,
-    base_jobs_to_run: list[str],
+    job_flags: dict[str, bool],
     workers: int,
-) -> None:
-    """Executes the processing pipeline in a background thread with sequential job execution.
+) -> tuple[bool, list[str]]:
+    """Executes the processing pipeline for a single session.
 
-    Runs jobs one at a time, with each job receiving all allocated CPU cores. Progress is tracked in the
-    ProcessingTracker YAML file and can be queried via get_processing_status_tool.
+    Runs jobs sequentially, with each job receiving all allocated CPU cores.
 
     Args:
         session_path: The path to the session's data directory.
-        base_jobs_to_run: The list of base job names to execute.
+        job_flags: Dictionary mapping job names to whether they should run.
         workers: The number of CPU cores to use for each job.
+
+    Returns:
+        A tuple containing a boolean indicating overall success and a list of error messages for any failed jobs.
     """
-    session_key = str(session_path)
+    job_errors: list[str] = []
 
     try:
         # Loads the session data and initializes the processing tracker.
@@ -122,16 +161,26 @@ def _run_processing_in_background(
             file_path=session.tracking_data.tracking_data_path.joinpath(ProcessingTrackers.BEHAVIOR)
         )
 
+        # Resolves which jobs are available based on existing log files.
+        available_jobs = _resolve_available_jobs(session_path=session_path)
+
+        # Determines which base jobs to run (requested AND available).
+        base_jobs_to_run = [
+            base_job_name
+            for base_job_name, requested in job_flags.items()
+            if requested and available_jobs[base_job_name]
+        ]
+
+        if not base_jobs_to_run:
+            return True, []  # No jobs to run is considered success.
+
         # Initializes the tracker file and gets job IDs.
-        job_ids = _initialize_processing_tracker(
-            session_path=session_path,
-            session_name=session_name,
-            base_job_names=base_jobs_to_run,
-        )
+        job_ids = _initialize_processing_tracker(session_path=session_path, base_job_names=base_jobs_to_run)
 
         # Executes jobs sequentially, each with full worker allocation.
+        all_succeeded = True
         for base_job_name in base_jobs_to_run:
-            _execute_single_job(
+            job_name, succeeded, error_msg = _execute_single_job(
                 session_path=session_path,
                 base_job_name=base_job_name,
                 session_name=session_name,
@@ -139,154 +188,338 @@ def _run_processing_in_background(
                 workers=workers,
                 tracker=tracker,
             )
-    except Exception:  # noqa: S110 - Exceptions are logged to the tracker by _execute_single_job.
-        pass
-    finally:
-        # Cleans up session tracking state.
-        _active_sessions.pop(session_key, None)
+            if not succeeded:
+                all_succeeded = False
+                job_errors.append(f"{job_name}: {error_msg}")
 
-
-@mcp.tool()
-def list_available_jobs_tool(session_path: str) -> str:
-    """Discovers which processing jobs can run for a session based on existing .npz log files.
-
-    Checks the session's behavior data directory to determine which log files exist and therefore which processing jobs
-    are available to run.
-
-    Args:
-        session_path: The absolute path to the session's root data directory.
-
-    Returns:
-        A formatted list showing which jobs are available and which are not available.
-    """
-    try:
-        path = Path(session_path)
-        if not path.exists():
-            return f"Error: Session path does not exist: {session_path}"
-
-        available_jobs = _resolve_available_jobs(session_path=path)
-
-        available = [name for name, exists in available_jobs.items() if exists]
-        not_available = [name for name, exists in available_jobs.items() if not exists]
-
-        result_lines = [f"Session: {session_path}"]
-        if available:
-            result_lines.append(f"Available jobs ({len(available)}): {', '.join(available)}")
-        if not_available:
-            result_lines.append(f"Not available ({len(not_available)}): {', '.join(not_available)}")
-
-    except Exception as e:
-        return f"Error: {e}"
+    except Exception as error:
+        frames = traceback.extract_tb(error.__traceback__)
+        location = f"{frames[-1].filename}:{frames[-1].lineno}" if frames else "unknown"
+        job_errors.append(f"Session setup failed - {type(error).__name__}: {error} ({location})")
+        return False, job_errors
     else:
-        return "\n".join(result_lines)
+        return all_succeeded, job_errors
 
 
-@mcp.tool()
-def get_processing_status_tool(session_path: str) -> str:
-    """Checks the processing status for a session with per-job progress details.
-
-    Determines whether processing is actively running in the background, has completed successfully, has failed, or has
-    not been started. Returns detailed per-job progress by reading from the ProcessingTracker YAML file.
+def _session_worker(session_path: Path, job_flags: dict[str, bool], workers: int) -> None:
+    """Worker function that processes a session and updates batch state on completion.
 
     Args:
-        session_path: The absolute path to the session's root data directory.
+        session_path: The path to the session's data directory.
+        job_flags: Dictionary mapping job names to whether they should run.
+        workers: The number of CPU cores to use for each job.
+    """
+    session_key = str(session_path)
+    success, errors = _run_session_processing(session_path=session_path, job_flags=job_flags, workers=workers)
+
+    if _batch_state is not None:
+        with _batch_state.lock:
+            # Removes from active, adds to completed or failed.
+            _batch_state.active.pop(session_key, None)
+            if success:
+                _batch_state.completed.add(session_key)
+            else:
+                _batch_state.failed.add(session_key)
+                if errors:
+                    _batch_state.errors[session_key] = errors
+
+
+def _batch_manager() -> None:
+    """Manager thread that monitors active sessions and starts queued sessions.
+
+    Runs continuously until all sessions are processed (queue empty and no active sessions).
+    """
+    timer = PrecisionTimer(precision=TimerPrecisions.MILLISECOND)
+
+    if _batch_state is None:
+        return
+
+    while True:
+        with _batch_state.lock:
+            # Cleans up finished threads from active.
+            finished_keys = [key for key, thread in _batch_state.active.items() if not thread.is_alive()]
+            for key in finished_keys:
+                _batch_state.active.pop(key, None)
+
+            # Checks if we're done (no active, no queued).
+            if not _batch_state.active and not _batch_state.queued:
+                break
+
+            # Starts new sessions if we have capacity.
+            while len(_batch_state.active) < _batch_state.max_parallel and _batch_state.queued:
+                next_session = _batch_state.queued.pop(0)
+                session_key = str(next_session)
+
+                thread = Thread(
+                    target=_session_worker,
+                    kwargs={
+                        "session_path": next_session,
+                        "job_flags": _batch_state.job_flags,
+                        "workers": _batch_state.workers,
+                    },
+                    daemon=True,
+                )
+                thread.start()
+                _batch_state.active[session_key] = thread
+
+        # Sleeps briefly before checking again.
+        timer.delay(delay=1000, allow_sleep=True)
+
+
+def _get_session_status(session_path: Path) -> dict[str, Any]:
+    """Retrieves the processing status for a single session.
+
+    Args:
+        session_path: The path to the session's data directory.
 
     Returns:
-        The current processing status with per-job details.
+        A dictionary containing session_name, status, progress (completed/total), current_job, job_details, and errors.
     """
+    session_key = str(session_path)
+
+    # Checks batch state for queue/active/completed status and errors.
+    is_queued = False
+    is_active = False
+    is_completed = False
+    is_failed = False
+    session_errors: list[str] = []
+
+    if _batch_state is not None:
+        with _batch_state.lock:
+            is_queued = session_path in _batch_state.queued
+            is_active = session_key in _batch_state.active and _batch_state.active[session_key].is_alive()
+            is_completed = session_key in _batch_state.completed
+            is_failed = session_key in _batch_state.failed
+            session_errors = _batch_state.errors.get(session_key, [])
+
+    # Extracts session name from path for display.
+    session_display_name = session_path.name
+
+    # If queued, returns early with QUEUED status.
+    if is_queued:
+        return {
+            "session_name": session_display_name,
+            "status": "QUEUED",
+            "completed": 0,
+            "total": 0,
+            "current_job": "-",
+            "job_details": [],
+        }
+
+    # Loads the session data to find the tracker file.
     try:
-        path = Path(session_path)
-        if not path.exists():
-            return f"Error: Session path does not exist: {session_path}"
+        session = SessionData.load(session_path=session_path)
+    except Exception:
+        return {
+            "session_name": session_display_name,
+            "status": "ERROR",
+            "completed": 0,
+            "total": 0,
+            "current_job": "-",
+            "job_details": [],
+        }
 
-        session_key = str(path)
+    tracker_path = session.tracking_data.tracking_data_path.joinpath(ProcessingTrackers.BEHAVIOR)
 
-        # Checks if processing is actively running in a background thread.
-        is_active = False
-        if session_key in _active_sessions:
-            thread = _active_sessions[session_key]
-            if thread.is_alive():
-                is_active = True
-            else:
-                # Thread finished, clean up the reference.
-                del _active_sessions[session_key]
+    if not tracker_path.exists():
+        return {
+            "session_name": session_display_name,
+            "status": "NOT_STARTED",
+            "completed": 0,
+            "total": 0,
+            "current_job": "-",
+            "job_details": [],
+        }
 
-        # Loads the session data to find the tracker file and session name.
-        session = SessionData.load(session_path=path)
-        tracker_path = session.tracking_data.tracking_data_path.joinpath(ProcessingTrackers.BEHAVIOR)
+    tracker = ProcessingTracker.from_yaml(file_path=tracker_path)
 
-        if not tracker_path.exists():
-            return f"Status: NOT_STARTED | Session: {session_path}"
+    if not tracker.jobs:
+        return {
+            "session_name": session_display_name,
+            "status": "NOT_STARTED",
+            "completed": 0,
+            "total": 0,
+            "current_job": "-",
+            "job_details": [],
+        }
 
-        # Loads the tracker and analyzes job statuses.
-        tracker = ProcessingTracker.from_yaml(file_path=tracker_path)
+    # Generates reverse mapping from job_id to base_job_name using the canonical session root path.
+    session_root = get_session_root(session)
+    session_name = session.session_name
+    id_to_name: dict[str, str] = {}
+    for base_job_name in BehaviorJobNames:
+        full_job_name = f"{session_name}_{base_job_name}"
+        job_id = ProcessingTracker.generate_job_id(session_path=session_root, job_name=full_job_name)
+        id_to_name[job_id] = base_job_name
 
-        if not tracker.jobs:
-            return f"Status: NOT_STARTED | Session: {session_path}"
+    # Counts job statuses.
+    succeeded_count = 0
+    failed_count = 0
+    pending_count = 0
+    running_count = 0
+    total_count = len(tracker.jobs)
+    current_job = "-"
+    job_details: list[tuple[str, str]] = []
 
-        # Generates reverse mapping from job_id to base_job_name for display.
-        session_name = session.session_name
-        id_to_name: dict[str, str] = {}
-        for base_job_name in BehaviorJobNames:
-            full_job_name = f"{session_name}_{base_job_name}"
-            job_id = ProcessingTracker.generate_job_id(session_path=path, job_name=full_job_name)
-            id_to_name[job_id] = base_job_name
+    for job_id, job_state in tracker.jobs.items():
+        job_name = id_to_name.get(job_id, job_id[:8])
 
-        # Counts job statuses and builds per-job details.
-        succeeded_count = 0
-        failed_count = 0
-        pending_count = 0
-        running_count = 0
-        total_count = len(tracker.jobs)
-        job_lines: list[str] = []
-
-        for job_id, job_state in tracker.jobs.items():
-            # Maps job ID back to readable name.
-            job_name = id_to_name.get(job_id, job_id[:8])
-
-            # Counts by status.
-            if job_state.status == ProcessingStatus.SUCCEEDED:
-                succeeded_count += 1
-                indicator = "[+]"
-            elif job_state.status == ProcessingStatus.FAILED:
-                failed_count += 1
-                indicator = "[X]"
-            elif job_state.status == ProcessingStatus.RUNNING:
-                running_count += 1
-                indicator = "[>]"
-            else:
-                pending_count += 1
-                indicator = "[ ]"
-
-            job_lines.append(f"  {indicator} {job_name}")
-
-        # Determines overall status.
-        if is_active or running_count > 0:
-            status = f"PROCESSING ({succeeded_count}/{total_count} complete)"
-        elif failed_count > 0 and succeeded_count > 0:
-            status = f"PARTIAL ({succeeded_count} succeeded, {failed_count} failed)"
-        elif failed_count > 0:
-            status = f"FAILED ({failed_count}/{total_count} failed)"
-        elif succeeded_count == total_count:
-            status = f"SUCCEEDED ({succeeded_count}/{total_count} complete)"
-        elif pending_count > 0:
-            status = f"PENDING ({pending_count}/{total_count} pending)"
+        if job_state.status == ProcessingStatus.SUCCEEDED:
+            succeeded_count += 1
+            job_details.append((job_name, "done"))
+        elif job_state.status == ProcessingStatus.FAILED:
+            failed_count += 1
+            job_details.append((job_name, "failed"))
+        elif job_state.status == ProcessingStatus.RUNNING:
+            running_count += 1
+            current_job = job_name
+            job_details.append((job_name, "running"))
         else:
-            status = "UNKNOWN"
+            pending_count += 1
+            job_details.append((job_name, "pending"))
 
-        # Builds the result message.
-        result_lines = [f"Session: {session_path}", f"Status: {status}", "", "Jobs:"]
-        result_lines.extend(job_lines)
-
-    except Exception as e:
-        return f"Error: {e}"
+    # Determines overall status.
+    if is_active or running_count > 0:
+        status = "PROCESSING"
+    elif is_failed or (failed_count > 0 and succeeded_count == 0):
+        status = "FAILED"
+    elif failed_count > 0 and succeeded_count > 0:
+        status = "PARTIAL"
+    elif is_completed or succeeded_count == total_count:
+        status = "SUCCEEDED"
+    elif pending_count > 0:
+        status = "PENDING"
     else:
-        return "\n".join(result_lines)
+        status = "UNKNOWN"
+
+    result: dict[str, Any] = {
+        "session_name": session_display_name,
+        "status": status,
+        "completed": succeeded_count,
+        "total": total_count,
+        "current_job": current_job,
+        "job_details": job_details,
+    }
+
+    if session_errors:
+        result["errors"] = session_errors
+
+    return result
+
+
+@mcp.tool()
+def discover_sessions_tool(root_directory: str) -> dict[str, Any]:
+    """Discovers all sessions in a directory tree that may need processing.
+
+    Searches for session_data.yaml files to identify session directories. For each found session, resolves and returns
+    the canonical session root path (parent of raw_data). These paths can be passed directly to start_processing_tool.
+
+    Args:
+        root_directory: The absolute path to the root directory to search.
+
+    Returns:
+        A dictionary containing a list of discovered session root paths and the total count.
+    """
+    root_path = Path(root_directory)
+
+    if not root_path.exists():
+        return {"error": f"Directory does not exist: {root_directory}"}
+
+    if not root_path.is_dir():
+        return {"error": f"Path is not a directory: {root_directory}"}
+
+    # Searches for session_data.yaml files as the heuristic for finding sessions.
+    session_paths: list[str] = []
+    errors: list[str] = []
+
+    for yaml_file in root_path.rglob("session_data.yaml"):
+        try:
+            # Loads the session and resolves to the canonical root path.
+            session = SessionData.load(session_path=yaml_file.parent)
+            session_root = get_session_root(session=session)
+            session_paths.append(str(session_root))
+        except Exception as error:
+            errors.append(f"{yaml_file.parent}: {error}")
+
+    # Sorts paths for consistent output.
+    session_paths.sort()
+
+    result: dict[str, Any] = {
+        "sessions": session_paths,
+        "count": len(session_paths),
+    }
+
+    if errors:
+        result["errors"] = errors
+
+    return result
+
+
+@mcp.tool()
+def get_processing_status_tool() -> dict[str, Any]:
+    """Returns the current processing status for all sessions being managed.
+
+    Returns status for active, queued, and completed sessions. If no batch processing is active, returns an empty
+    status indicating no sessions are being processed.
+
+    Returns:
+        A dictionary containing:
+        - sessions: List of status dictionaries for each session (active, queued, completed)
+        - summary: Overall progress statistics (total, completed, failed, processing, queued)
+    """
+    if _batch_state is None:
+        return {
+            "sessions": [],
+            "summary": {
+                "total": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "processing": 0,
+                "queued": 0,
+            },
+        }
+
+    session_statuses: list[dict[str, Any]] = []
+
+    with _batch_state.lock:
+        # Collects all session paths from active, queued, completed, and failed sets.
+        all_sessions: list[Path] = [Path(key) for key in _batch_state.active]
+        all_sessions.extend(_batch_state.queued)
+        all_sessions.extend(Path(key) for key in _batch_state.completed)
+
+        # Adds failed sessions that aren't already included.
+        existing_keys = {str(path) for path in all_sessions}
+        all_sessions.extend(Path(key) for key in _batch_state.failed if key not in existing_keys)
+
+        queued_count = len(_batch_state.queued)
+        processing_count = len(_batch_state.active)
+        succeeded_count = len(_batch_state.completed)
+        failed_count = len(_batch_state.failed)
+
+    # Gets status for each session (outside lock to avoid blocking).
+    for session_path in all_sessions:
+        status = _get_session_status(session_path=session_path)
+        session_statuses.append(status)
+
+    # Sorts sessions: processing first, then queued, then completed/failed.
+    status_order = {"PROCESSING": 0, "QUEUED": 1, "PENDING": 2, "SUCCEEDED": 3, "PARTIAL": 4, "FAILED": 5}
+    session_statuses.sort(key=lambda s: (status_order.get(s["status"], 99), s["session_name"]))
+
+    return {
+        "sessions": session_statuses,
+        "summary": {
+            "total": len(all_sessions),
+            "succeeded": succeeded_count,
+            "failed": failed_count,
+            "processing": processing_count,
+            "queued": queued_count,
+        },
+    }
 
 
 @mcp.tool()
 def start_processing_tool(
-    session_path: str,
+    session_paths: list[str],
     *,
     process_runtime: bool = True,
     process_face_camera: bool = True,
@@ -295,143 +528,110 @@ def start_processing_tool(
     process_sensor_microcontroller: bool = True,
     process_encoder_microcontroller: bool = True,
     workers: int = -1,
-) -> str:
-    """Starts behavior data processing in the background with sequential job execution.
+) -> dict[str, Any]:
+    """Starts behavior data processing for one or more sessions.
 
-    Launches processing in a background thread with jobs running sequentially. Each job receives all allocated CPU
-    cores, maximizing throughput per job. This approach allows multiple sessions to be processed in parallel by
-    starting separate background threads for each session.
+    Accepts a list of session paths and manages them as a batch. Sessions are processed in parallel up to the
+    calculated maximum based on available CPU cores. Remaining sessions are queued and automatically started as
+    earlier sessions complete.
 
-    Important:
-        The AI agent calling this tool should use get_processing_status_tool to monitor progress after starting
-        processing. The status tool will show per-job progress.
+    The tool returns immediately after starting the batch. Use get_processing_status_tool to monitor progress.
 
     Args:
-        session_path: The absolute path to the session's root data directory.
-        process_runtime: Determines whether to process the session runtime data.
-        process_face_camera: Determines whether to process the face camera timestamps.
-        process_body_camera: Determines whether to process the body camera timestamps.
-        process_actor_microcontroller: Determines whether to process the Actor microcontroller data.
-        process_sensor_microcontroller: Determines whether to process the Sensor microcontroller data.
-        process_encoder_microcontroller: Determines whether to process the Encoder microcontroller data.
-        workers: The number of CPU cores to use per job. Set to -1 to use the default (available cores minus 4,
-            capped at 30).
+        session_paths: List of absolute paths to session root data directories. Minimum of 1 session required.
+        process_runtime: Whether to process the session runtime data.
+        process_face_camera: Whether to process the face camera timestamps.
+        process_body_camera: Whether to process the body camera timestamps.
+        process_actor_microcontroller: Whether to process the Actor microcontroller data.
+        process_sensor_microcontroller: Whether to process the Sensor microcontroller data.
+        process_encoder_microcontroller: Whether to process the Encoder microcontroller data.
+        workers: The number of CPU cores to use per job. Set to -1 for automatic allocation.
 
     Returns:
-        A confirmation message showing the number of jobs started and the worker count.
+        A dictionary containing confirmation of started sessions, queued sessions, and worker allocation.
     """
-    try:
+    global _batch_state
+
+    if not session_paths:
+        return {"error": "At least one session path is required"}
+
+    # Validates all session paths exist.
+    valid_paths: list[Path] = []
+    invalid_paths: list[str] = []
+
+    for session_path in session_paths:
         path = Path(session_path)
-        if not path.exists():
-            return f"Error: Session path does not exist: {session_path}"
+        if path.exists():
+            valid_paths.append(path)
+        else:
+            invalid_paths.append(session_path)
 
-        session_key = str(path)
+    if not valid_paths:
+        return {"error": "No valid session paths provided", "invalid_paths": invalid_paths}
 
-        # Checks if processing is already running for this session.
-        if session_key in _active_sessions:
-            thread = _active_sessions[session_key]
-            if thread.is_alive():
-                return f"Error: Processing already in progress for session: {session_path}"
-            # Previous thread finished, clean up.
-            del _active_sessions[session_key]
+    # Checks if processing is already active.
+    if _batch_state is not None:
+        with _batch_state.lock:
+            if _batch_state.active or _batch_state.queued:
+                return {
+                    "error": "Processing already in progress. Wait for current batch to complete or check status.",
+                    "active_count": len(_batch_state.active),
+                    "queued_count": len(_batch_state.queued),
+                }
 
-        # Verifies the session can be loaded before starting the background thread.
-        SessionData.load(session_path=path)
+    # Builds job flags dictionary.
+    job_flags: dict[str, bool] = {
+        BehaviorJobNames.RUNTIME: process_runtime,
+        BehaviorJobNames.FACE_CAMERA: process_face_camera,
+        BehaviorJobNames.BODY_CAMERA: process_body_camera,
+        BehaviorJobNames.ACTOR_MICROCONTROLLER: process_actor_microcontroller,
+        BehaviorJobNames.SENSOR_MICROCONTROLLER: process_sensor_microcontroller,
+        BehaviorJobNames.ENCODER_MICROCONTROLLER: process_encoder_microcontroller,
+    }
 
-        # Resolves which jobs are available based on existing log files.
-        available_jobs = _resolve_available_jobs(session_path=path)
+    # If all flags are False, treats as all True.
+    if not any(job_flags.values()):
+        job_flags = dict.fromkeys(job_flags, True)
 
-        # Maps base job names to their requested flags.
-        requested_jobs: dict[str, bool] = {
-            BehaviorJobNames.RUNTIME: process_runtime,
-            BehaviorJobNames.FACE_CAMERA: process_face_camera,
-            BehaviorJobNames.BODY_CAMERA: process_body_camera,
-            BehaviorJobNames.ACTOR_MICROCONTROLLER: process_actor_microcontroller,
-            BehaviorJobNames.SENSOR_MICROCONTROLLER: process_sensor_microcontroller,
-            BehaviorJobNames.ENCODER_MICROCONTROLLER: process_encoder_microcontroller,
-        }
+    # Calculates resource allocation.
+    job_workers = _calculate_job_workers(requested_workers=workers)
+    max_parallel = _calculate_max_parallel_sessions()
 
-        # If all requested job flags are False, treats them as all True (process all available jobs).
-        if not any(requested_jobs.values()):
-            requested_jobs = dict.fromkeys(requested_jobs, True)
+    # Initializes batch state.
+    _batch_state = _BatchState(
+        queued=list(valid_paths),
+        active={},
+        completed=set(),
+        failed=set(),
+        job_flags=job_flags,
+        workers=job_workers,
+        max_parallel=max_parallel,
+        lock=Lock(),
+        manager_thread=None,
+    )
 
-        # Determines which base jobs to run (requested AND available).
-        base_jobs_to_run = [
-            base_job_name
-            for base_job_name, requested in requested_jobs.items()
-            if requested and available_jobs[base_job_name]
-        ]
+    # Starts the batch manager thread.
+    manager = Thread(target=_batch_manager, daemon=True)
+    manager.start()
+    _batch_state.manager_thread = manager
 
-        if not base_jobs_to_run:
-            return f"Error: No jobs available to run for session: {session_path}"
+    # Calculates how many will start immediately vs queue.
+    immediate_start = min(len(valid_paths), max_parallel)
+    queued_count = len(valid_paths) - immediate_start
 
-        # Calculates workers for sequential job execution.
-        job_workers = _calculate_job_workers(requested_workers=workers)
+    result: dict[str, Any] = {
+        "started": True,
+        "total_sessions": len(valid_paths),
+        "immediate_start": immediate_start,
+        "queued": queued_count,
+        "max_parallel": max_parallel,
+        "workers_per_session": job_workers,
+    }
 
-        # Creates and starts the background processing thread.
-        thread = Thread(
-            target=_run_processing_in_background,
-            kwargs={
-                "session_path": path,
-                "base_jobs_to_run": base_jobs_to_run,
-                "workers": job_workers,
-            },
-            daemon=True,
-        )
-        thread.start()
+    if invalid_paths:
+        result["invalid_paths"] = invalid_paths
 
-        # Stores the thread reference for status tracking.
-        _active_sessions[session_key] = thread
-
-    except Exception as e:
-        return f"Error: {e}"
-    else:
-        return f"Processing started: {len(base_jobs_to_run)} jobs | Workers: {job_workers} | Session: {session_path}"
-
-
-@mcp.tool()
-def check_output_files_tool(session_path: str) -> str:
-    """Verifies which .feather output files exist in the session's processed data directory.
-
-    Lists all .feather files that have been generated by the processing pipeline, along with their file sizes.
-
-    Args:
-        session_path: The absolute path to the session's root data directory.
-
-    Returns:
-        A formatted list of output files with sizes, or a message indicating no files exist.
-    """
-    try:
-        path = Path(session_path)
-        if not path.exists():
-            return f"Error: Session path does not exist: {session_path}"
-
-        session = SessionData.load(session_path=path)
-        output_directory = session.processed_data.behavior_data_path
-
-        if not output_directory.exists():
-            return f"No output directory found: {output_directory}"
-
-        feather_files = sorted(output_directory.glob("*.feather"))
-
-        if not feather_files:
-            return f"No .feather files found in: {output_directory}"
-
-        result_lines = [f"Output directory: {output_directory}", f"Files ({len(feather_files)}):"]
-        for file_path in feather_files:
-            size_bytes = file_path.stat().st_size
-            if size_bytes >= _BYTES_PER_KB * _BYTES_PER_KB:
-                size_str = f"{size_bytes / (_BYTES_PER_KB * _BYTES_PER_KB):.1f} MB"
-            elif size_bytes >= _BYTES_PER_KB:
-                size_str = f"{size_bytes / _BYTES_PER_KB:.1f} KB"
-            else:
-                size_str = f"{size_bytes} B"
-            result_lines.append(f"  {file_path.name} ({size_str})")
-
-    except Exception as e:
-        return f"Error: {e}"
-    else:
-        return "\n".join(result_lines)
+    return result
 
 
 def run_server(transport: Literal["stdio", "sse", "streamable-http"] = "stdio") -> None:
@@ -441,11 +641,3 @@ def run_server(transport: Literal["stdio", "sse", "streamable-http"] = "stdio") 
         transport: The transport type to use ('stdio', 'sse', or 'streamable-http').
     """
     mcp.run(transport=transport)
-
-
-def run_mcp_server() -> None:
-    """Starts the MCP server with stdio transport.
-
-    Intended to be used as a CLI entry point.
-    """
-    run_server(transport="stdio")

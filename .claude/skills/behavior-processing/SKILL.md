@@ -22,7 +22,7 @@ tools are the only supported interface for agentic behavior data processing.
 
 - You MUST NOT import or call sl-behavior Python functions directly (e.g., `from sl_behavior.pipeline import ...`)
 - You MUST NOT attempt to run processing by executing Python scripts or CLI commands
-- You MUST use the four MCP tools listed in the "Available Tools" section below
+- You MUST use the three MCP tools listed in the "Available Tools" section below
 - You MUST verify the MCP server is connected before attempting any processing operations
 
 ### Why MCP Tools Are Required
@@ -30,9 +30,10 @@ tools are the only supported interface for agentic behavior data processing.
 The MCP tools provide:
 
 1. **Background processing** - Jobs run in separate threads, allowing parallel session processing
-2. **Status tracking** - Real-time progress monitoring via the ProcessingTracker system
-3. **Error isolation** - Failures in one job don't crash the entire pipeline
-4. **Resource management** - Automatic CPU core allocation and cleanup
+2. **Automatic queuing** - Sessions beyond parallel capacity are queued and started automatically
+3. **Status tracking** - Real-time progress monitoring via the ProcessingTracker system
+4. **Error isolation** - Failures in one job don't crash the entire pipeline
+5. **Resource management** - Automatic CPU core allocation and cleanup
 
 Direct Python calls bypass these capabilities and will fail in agentic contexts.
 
@@ -68,274 +69,325 @@ Add to your `.mcp.json` file in the project root:
 
 ### Verifying Connection
 
-Before processing, verify the MCP tools are available by checking your tool list. If the four sl-behavior tools
-(`list_available_jobs_tool`, `get_processing_status_tool`, `start_processing_tool`, `check_output_files_tool`) are
-not present, the server is not connected.
+Before processing, verify the MCP tools are available by checking your tool list. If the sl-behavior tools
+(`discover_sessions_tool`, `start_processing_tool`, `get_processing_status_tool`) are not present, the server is not
+connected.
 
 ---
 
 ## Available Tools
 
-The MCP server exposes exactly four tools. You MUST use these tools for all processing operations.
+The MCP server exposes three tools. You MUST use these tools for all processing operations.
 
-| Tool                         | Purpose                                                       |
-|------------------------------|---------------------------------------------------------------|
-| `list_available_jobs_tool`   | Discovers which jobs can run based on existing .npz log files |
-| `get_processing_status_tool` | Checks processing state (PROCESSING, SUCCEEDED, FAILED, etc.) |
-| `start_processing_tool`      | Starts processing in background thread, returns immediately   |
-| `check_output_files_tool`    | Verifies .feather output files exist and reports their sizes  |
+| Tool                         | Purpose                                                             |
+|------------------------------|---------------------------------------------------------------------|
+| `discover_sessions_tool`     | Finds sessions under a root directory, returns session root paths   |
+| `start_processing_tool`      | Starts processing for one or more sessions (with automatic queuing) |
+| `get_processing_status_tool` | Returns status for all sessions being managed                       |
 
 ---
 
-## Log File Architecture
+## Tool Input/Output Formats
 
-This library processes `.npz` log archives generated during Sun Lab VR data acquisition sessions. Each log file has a
-unique numeric source ID that identifies its origin.
+### `discover_sessions_tool`
 
-### Source ID Assignments
-
-| Source ID | Log File       | Generator Library                   | Content                              |
-|-----------|----------------|-------------------------------------|--------------------------------------|
-| 1         | `1_log.npz`    | sl-experiment (Mesoscope-VR)        | VR system state, runtime, trials     |
-| 51        | `51_log.npz`   | ataraxis-video-system               | Face camera frame timestamps         |
-| 62        | `62_log.npz`   | ataraxis-video-system               | Body camera frame timestamps         |
-| 101       | `101_log.npz`  | ataraxis-communication-interface    | Actor microcontroller modules        |
-| 152       | `152_log.npz`  | ataraxis-communication-interface    | Sensor microcontroller modules       |
-| 203       | `203_log.npz`  | ataraxis-communication-interface    | Encoder microcontroller modules      |
-
-### Common Message Structure
-
-All log files share a common message envelope format:
-
-```
-Byte 0:      source_id (uint8)     - Identifies the logging component
-Bytes 1-8:   timestamp (uint64)    - Microseconds elapsed since onset (or 0 for onset message)
-Bytes 9+:    payload               - Source-specific data
+**Input:**
+```python
+{
+    "root_directory": "/path/to/data"  # Required, directory to search
+}
 ```
 
-### Onset Timestamp Handling
+**Output:**
+```python
+{
+    "sessions": [
+        "/path/to/data/animal1/2024-01-15-10-30-00-123456",
+        "/path/to/data/animal1/2024-01-16-09-00-00-234567",
+        ...
+    ],
+    "count": 30
+}
+```
 
-Each log file contains a special onset message where `timestamp = 0`. The payload of this message contains the absolute
-UTC timestamp in microseconds since Unix epoch. All other timestamps are relative to this onset, enabling reconstruction
-of absolute timestamps via `absolute_time = onset_us + elapsed_us`.
+The tool searches for `session_data.yaml` files recursively and returns the resolved session root paths (parent of
+`raw_data`). These paths can be passed directly to `start_processing_tool`.
 
----
+### `start_processing_tool`
 
-## Runtime Data Log (1_log.npz)
+**Input:**
+```python
+{
+    "session_paths": ["/path/to/session1", "/path/to/session2", ...],  # Required, minimum 1
+    "process_runtime": True,              # Optional, default True
+    "process_face_camera": True,          # Optional, default True
+    "process_body_camera": True,          # Optional, default True
+    "process_actor_microcontroller": True,   # Optional, default True
+    "process_sensor_microcontroller": True,  # Optional, default True
+    "process_encoder_microcontroller": True, # Optional, default True
+    "workers": -1                         # Optional, -1 for automatic
+}
+```
 
-The runtime log captures VR system state, session runtime state, trial guidance, and cue sequences. Generated by the
-`_MesoscopeVRSystem` class in sl-experiment.
+**Output:**
+```python
+{
+    "started": True,
+    "total_sessions": 30,
+    "immediate_start": 1,      # Sessions started immediately
+    "queued": 29,              # Sessions waiting in queue
+    "max_parallel": 1,         # Max concurrent sessions based on CPU
+    "workers_per_session": 28  # CPU cores allocated per session
+}
+```
 
-### Message Codes
+### `get_processing_status_tool`
 
-| Code | Name                      | Payload Size | Description                                    |
-|------|---------------------------|--------------|------------------------------------------------|
-| 1    | SYSTEM_STATE              | 2 bytes      | VR system configuration state change           |
-| 2    | RUNTIME_STATE             | 2 bytes      | Session runtime stage change                   |
-| 3    | REINFORCING_GUIDANCE      | 2 bytes      | Water reward trial guidance mode change        |
-| 4    | AVERSIVE_GUIDANCE         | 2 bytes      | Gas puff trial guidance mode change            |
-| 5    | DISTANCE_SNAPSHOT         | 9 bytes      | Cumulative distance at cue sequence change     |
-| >500 | CUE_SEQUENCE              | Variable     | VR wall cue sequence (uint8 array)             |
+**Input:** None (no parameters required)
 
-### VR System States
-
-| Code | State         | Description                                                |
-|------|---------------|------------------------------------------------------------|
-| 0    | IDLE          | System paused or not conducting acquisition                |
-| 1    | REST          | Rest period: brake engaged, screens off, torque enabled    |
-| 2    | RUN           | Run period: brake disengaged, encoder enabled              |
-| 3    | LICK_TRAINING | Lick training: wheel locked, animal trains to lick         |
-| 4    | RUN_TRAINING  | Run training: wheel unlocked, animal trains to run         |
-
-### Trial Decomposition
-
-Cue sequences are decomposed into individual trials using a greedy longest-match algorithm. Each trial type has a unique
-wall cue motif (byte sequence) defined in the experiment configuration. The algorithm:
-
-1. Iterates through the cue sequence from the start
-2. Matches the longest possible trial motif at each position
-3. Records the trial type index and cumulative distance threshold
-4. Continues until the entire sequence is decomposed
-
-### Output Files
-
-| Output File                               | Columns                                        |
-|-------------------------------------------|------------------------------------------------|
-| `system_state_data.feather`               | `time_us`, `system_state`                      |
-| `runtime_state_data.feather`              | `time_us`, `runtime_state`                     |
-| `reinforcing_guidance_state_data.feather` | `time_us`, `reinforcing_guidance_state`        |
-| `aversive_guidance_state_data.feather`    | `time_us`, `aversive_guidance_state`           |
-| `vr_cue_data.feather`                     | `vr_cue`, `traveled_distance_cm`               |
-| `vr_trigger_zone_data.feather`            | `trigger_zone_start_cm`, `trigger_zone_end_cm` |
-| `trial_data.feather`                      | `trial_type_index`, `traveled_distance_cm`     |
-
----
-
-## Camera Data Logs (51_log.npz, 62_log.npz)
-
-Camera logs contain frame acquisition timestamps generated by ataraxis-video-system's `VideoSystem` class.
-
-### Message Format
-
-**Regular Frame Message (9 bytes total):**
-
-| Offset  | Size    | Type   | Description                           |
-|---------|---------|--------|---------------------------------------|
-| 0       | 1 byte  | uint8  | Source ID (51 or 62)                  |
-| 1-8     | 8 bytes | uint64 | Microseconds elapsed since onset      |
-
-**Onset Message (17 bytes total):**
-
-| Offset  | Size    | Type   | Description                           |
-|---------|---------|--------|---------------------------------------|
-| 0       | 1 byte  | uint8  | Source ID                             |
-| 1-8     | 8 bytes | uint64 | Zero (indicates onset message)        |
-| 9-16    | 8 bytes | int64  | Absolute UTC timestamp (microseconds) |
-
-### Output Files
-
-| Input Log      | Output File                         | Columns         |
-|----------------|-------------------------------------|-----------------|
-| `51_log.npz`   | `face_camera_timestamps.feather`    | `frame_time_us` |
-| `62_log.npz`   | `body_camera_timestamps.feather`    | `frame_time_us` |
+**Output:**
+```python
+{
+    "sessions": [
+        {
+            "session_name": "2024-01-15-10-30-00-123456",
+            "status": "PROCESSING",  # PROCESSING, QUEUED, SUCCEEDED, FAILED, PARTIAL
+            "completed": 3,          # Completed jobs
+            "total": 6,              # Total jobs
+            "current_job": "body_camera_processing",
+            "job_details": [
+                ("runtime_processing", "done"),
+                ("face_camera_processing", "done"),
+                ("body_camera_processing", "running"),
+                ("actor_microcontroller_processing", "pending"),
+                ...
+            ],
+            "errors": [              # Only present if status is FAILED or PARTIAL
+                "actor_microcontroller_processing: KeyError: 'cm_per_pulse' (pipeline.py:234)"
+            ]
+        },
+        ...
+    ],
+    "summary": {
+        "total": 30,
+        "succeeded": 5,
+        "failed": 0,
+        "processing": 1,
+        "queued": 24
+    }
+}
+```
 
 ---
 
-## Microcontroller Data Logs
+## Formatting Status as a Table
 
-Microcontroller logs contain hardware module event data generated by ataraxis-communication-interface. Each
-microcontroller manages multiple hardware modules identified by (module_type, module_id) pairs.
+When presenting status to the user, you MUST format the data as a clear table. The table MUST include these three
+columns for each session:
 
-### Message Format
+1. **Full Session Name** - The complete session identifier (e.g., `2024-01-15-10-30-00-123456`)
+2. **Job Completion State** - Progress as `completed/total` jobs (e.g., `3/6`)
+3. **Currently Executing Job** - The job currently running, or `-` if queued/completed
 
-| Offset  | Size     | Type   | Description                                    |
-|---------|----------|--------|------------------------------------------------|
-| 0       | 1 byte   | uint8  | Source ID (101, 152, or 203)                   |
-| 1-8     | 8 bytes  | uint64 | Microseconds elapsed since onset               |
-| 9       | 1 byte   | uint8  | Protocol code (6=MODULE_DATA, 8=MODULE_STATE)  |
-| 10      | 1 byte   | uint8  | Module type                                    |
-| 11      | 1 byte   | uint8  | Module instance ID                             |
-| 12      | 1 byte   | uint8  | Command code                                   |
-| 13      | 1 byte   | uint8  | Event code (51+ for custom data)               |
-| 14      | 1 byte   | uint8  | Prototype code (data type, MODULE_DATA only)   |
-| 15+     | Variable | varies | Data payload (MODULE_DATA only)                |
+**Required table format:**
 
-### Actor Microcontroller (101_log.npz)
+```
+| Session                      | Completion | Current Job              |
+|------------------------------|------------|--------------------------|
+| 2024-01-15-10-30-00-123456   | 3/6        | body_camera_processing   |
+| 2024-01-15-11-45-00-234567   | 0/6        | (queued)                 |
+| 2024-01-16-09-00-00-111111   | 6/6        | -                        |
+```
 
-Manages actuator hardware modules that control physical outputs.
+**Full example with summary:**
 
-| Module Type | Instance | Module Name  | Event Codes                                           |
-|-------------|----------|--------------|-------------------------------------------------------|
-| 3           | 1        | BrakeModule  | 51 (kEngaged), 52 (kDisengaged)                       |
-| 5           | 1        | ValveModule  | 51 (kOpen), 52 (kClosed), 54 (kToneOn), 55 (kToneOff) |
-| 5           | 2        | GasPuffValve | 51 (kOpen), 52 (kClosed)                              |
-| 7           | 1        | ScreenModule | 51 (kOn), 52 (kOff)                                   |
+```
+**Processing Status Check**
 
-**Output Files:**
+Summary: 5/30 succeeded | 1 processing | 24 queued | 0 failed
 
-| Output File              | Columns                                              | Description                        |
-|--------------------------|------------------------------------------------------|------------------------------------|
-| `brake_data.feather`     | `time_us`, `brake_torque_N_cm`                       | Brake engagement torque            |
-| `valve_data.feather`     | `time_us`, `dispensed_water_volume_uL`, `tone_state` | Water rewards and tone cues        |
-| `gas_puff_data.feather`  | `time_us`, `puff_state`, `cumulative_puff_count`     | Gas puff delivery events           |
-| `screen_data.feather`    | `time_us`, `screen_state`                            | VR screen on/off state             |
+| Session                      | Completion | Current Job              |
+|------------------------------|------------|--------------------------|
+| 2024-01-15-10-30-00-123456   | 3/6        | body_camera_processing   |
+| 2024-01-15-11-45-00-234567   | 0/6        | (queued)                 |
+| 2024-01-15-12-00-00-345678   | 0/6        | (queued)                 |
+| 2024-01-16-09-00-00-111111   | 6/6        | -                        |
+| 2024-01-16-10-15-00-222222   | 6/6        | -                        |
+```
 
-### Sensor Microcontroller (152_log.npz)
-
-Manages sensor hardware modules that capture animal behavior.
-
-| Module Type | Instance | Module Name   | Event Codes                                      |
-|-------------|----------|---------------|--------------------------------------------------|
-| 4           | 1        | LickModule    | 51 (kChanged) with 12-bit ADC voltage            |
-| 6           | 1        | TorqueModule  | 51 (kCCWTorque), 52 (kCWTorque)                  |
-| 1           | 1        | TTLModule     | 51 (kInputOn), 52 (kInputOff) for mesoscope sync |
-
-**Output Files:**
-
-| Output File                    | Columns                                       | Description                 |
-|--------------------------------|-----------------------------------------------|-----------------------------|
-| `lick_data.feather`            | `time_us`, `voltage_12_bit_adc`, `lick_state` | Lick sensor readings        |
-| `torque_data.feather`          | `time_us`, `torque_N_cm`                      | Wheel torque measurements   |
-| `mesoscope_frame_data.feather` | `time_us`, `ttl_state`                        | Mesoscope frame sync pulses |
-
-### Encoder Microcontroller (203_log.npz)
-
-Manages the rotary encoder for tracking animal locomotion.
-
-| Module Type | Instance | Module Name    | Event Codes                                     |
-|-------------|----------|----------------|-------------------------------------------------|
-| 2           | 1        | EncoderModule  | 51 (kRotatedCCW), 52 (kRotatedCW) with float64  |
-
-**Output Files:**
-
-| Output File            | Columns                           | Description                  |
-|------------------------|-----------------------------------|------------------------------|
-| `encoder_data.feather` | `time_us`, `traveled_distance_cm` | Cumulative distance traveled |
+**Important:** Always use the FULL session name from the session path, not a truncated version. The session name is
+typically found in the path (e.g., `/home/data/test_run/2024-01-15-10-30-00-123456/raw_data` -> session name is
+`2024-01-15-10-30-00-123456`).
 
 ---
 
 ## Processing Workflow
 
-### Step 1: Discover Available Jobs
+The workflow starts processing in the background and allows the user to check status on demand.
 
-Before starting processing, check which jobs are available for the session:
+### Pre-Processing Checklist
+
+**You MUST complete this checklist before calling `start_processing_tool`.** Do not skip any step.
 
 ```
-Tool: list_available_jobs_tool
-Input: session_path = "/path/to/session"
+- [ ] Session discovery complete (used discover_sessions_tool or received explicit paths)
+- [ ] Asked user about CPU core allocation (see Step 2 below)
+- [ ] Received user response confirming worker count (number or "all"/automatic)
+- [ ] Confirmed which job types to process (if user has specific requirements)
 ```
 
-Returns which log files exist and which jobs can run.
+**STOP**: If any checkbox is incomplete, do not proceed to `start_processing_tool`. Complete the missing steps first.
 
-### Step 2: Start Processing
+### Workflow Overview
 
-Start processing in the background. The tool returns immediately, allowing parallel session processing:
+1. **Discover sessions** → Find all session paths to process
+2. **Ask about CPU allocation** → Explain resource model and ask how many cores to use
+3. **Start processing** → Call `start_processing_tool` with session paths and worker count
+4. **Inform user** → Report batch status and explain how to check progress
+5. **Check status on request** → When the user asks, display status table
+6. **Explain any errors** → When processing completes with failures, analyze and explain errors
+
+### Step 1: Discover Sessions
+
+If given a parent directory containing multiple sessions, use the `discover_sessions_tool` to find all session paths:
+
+```
+Tool: discover_sessions_tool
+Input: root_directory = "/path/to/data"
+```
+
+The tool searches for `session_data.yaml` files and returns the resolved session root paths.
+
+### Step 2: Ask About CPU Allocation
+
+Before starting processing, you MUST ask the user how many CPU cores to dedicate. Explain the resource allocation
+model so they can make an informed decision:
+
+> "Found [N] sessions to process. Before starting, how many CPU cores should I dedicate to processing?
+>
+> **Resource allocation model:**
+> - Each session saturates at **30 cores** (using more provides no benefit)
+> - To process **2+ sessions in parallel**, you need at least **45 cores** (30 for the first + 15 minimum for each
+>   additional session)
+> - The system reserves 4 cores for overhead, so available workers = total cores - 4
+>
+> Your system has [X] cores. With all cores dedicated, [Y] session(s) can process in parallel.
+> You can specify fewer cores if you want to leave resources for other work.
+>
+> How many cores would you like to use? (Enter a number, or 'all' for automatic allocation)"
+
+**After the user responds:**
+- If they say "all" or want automatic allocation, use `workers: -1`
+- If they specify a number, use that as the `workers` parameter
+- If they specify fewer than 12 cores, warn that processing will be slow but proceed if they confirm
+
+### Step 3: Start Processing
+
+Call `start_processing_tool` with ALL session paths and the worker count:
 
 ```
 Tool: start_processing_tool
-Input:
-  session_path = "/path/to/session"
-  process_runtime = true
-  process_face_camera = true
-  process_body_camera = true
-  process_actor_microcontroller = true
-  process_sensor_microcontroller = true
-  process_encoder_microcontroller = true
-  workers = -1
+Input: session_paths = ["/path/session1", "/path/session2", ..., "/path/session30"]
+       workers = -1  # or the user-specified number
 ```
 
-Setting `workers = -1` uses all available CPU cores. Set to `1` for sequential processing.
+The tool will:
+- Calculate max parallel sessions based on allocated cores
+- Start up to max_parallel sessions immediately
+- Queue the rest for automatic processing
+- Return immediately with confirmation
 
-### Step 3: Monitor Progress
+### Step 4: Inform User
 
-Check processing status periodically:
+After starting, report the batch status and explain that processing runs in the background:
+
+> "Started processing [N] sessions with [X] workers per session. [Y] session(s) processing in parallel,
+> [Z] queued.
+>
+> Processing runs in the background. You can ask me to check status at any time, or request periodic updates
+> (e.g., 'check every 5 minutes'). I'll display a progress table whenever you ask."
+
+### Step 5: Check Status on Request
+
+When the user requests a status update, call `get_processing_status_tool` and display the formatted table:
 
 ```
 Tool: get_processing_status_tool
-Input: session_path = "/path/to/session"
+Input: (none)
 ```
 
-Status values:
+**If the user requests periodic updates** (e.g., "check every 10 minutes"), honor that request and check at the
+specified interval until processing completes.
 
-| Status        | Meaning                                             |
-|---------------|-----------------------------------------------------|
-| `PROCESSING`  | Background thread is actively processing            |
-| `SUCCEEDED`   | All jobs completed successfully                     |
-| `FAILED`      | One or more jobs failed                             |
-| `PARTIAL`     | Some jobs succeeded, some failed                    |
-| `PENDING`     | Jobs are queued but not yet started                 |
-| `NOT_STARTED` | No tracker file exists (processing never initiated) |
+**When processing completes** (`processing: 0` and `queued: 0`), proceed to Step 6 for error analysis.
 
-### Step 4: Verify Outputs
+### Step 6: Explain Any Errors
 
-After processing completes, verify the output files:
+**You MUST analyze and explain any errors when processing completes.** This is a mandatory step, not optional.
+
+When the status check shows sessions with FAILED or PARTIAL status:
+
+1. **Read the LOG_ARCHITECTURE.md reference** to understand log file structures and common error patterns
+2. **Extract error messages** from the status output's `errors` field for each failed session
+3. **Identify the root cause** by mapping the error to the appropriate section in LOG_ARCHITECTURE.md
+4. **Explain to the user** in plain language what went wrong and how to fix it
+
+**Error explanation format:**
 
 ```
-Tool: check_output_files_tool
-Input: session_path = "/path/to/session"
+**Processing Complete**
+
+Summary: 28/30 succeeded | 0 processing | 0 queued | 2 failed
+
+**Failed Sessions:**
+
+1. **2024-01-15-10-30-00-123456** - FAILED
+   - Error: `actor_microcontroller_processing: KeyError: 'minimum_brake_strength' (pipeline.py:234)`
+   - Cause: The `hardware_state.yaml` file is missing the brake calibration value required to process
+     brake engagement data from the Actor microcontroller (101_log.npz).
+   - Fix: Add `minimum_brake_strength` and `maximum_brake_strength` to the session's `hardware_state.yaml`.
+
+2. **2024-01-16-09-00-00-234567** - PARTIAL
+   - Error: `encoder_microcontroller_processing: FileNotFoundError: 203_log.npz`
+   - Cause: The encoder log file is missing. This can occur if the encoder microcontroller was not
+     enabled during the session or if the log file was not transferred correctly.
+   - Fix: Verify the encoder was enabled in the experiment configuration. If it was, check if
+     `203_log.npz` exists in the session's `raw_data/` directory.
 ```
 
-Lists all `.feather` files in the processed data directory with their sizes.
+**If all sessions succeed**, simply report completion:
+
+```
+**Processing Complete**
+
+Summary: 30/30 succeeded | 0 processing | 0 queued | 0 failed
+
+All sessions processed successfully. Output files are ready in each session's `behavior_data/` directory.
+```
+
+---
+
+## Log File Reference
+
+For detailed information about log file formats, message structures, and hardware module data, refer to
+[LOG_ARCHITECTURE.md](LOG_ARCHITECTURE.md).
+
+Use this reference when:
+- Answering user questions about log composition or data structures
+- Debugging processing errors
+- Understanding which log files map to which processing jobs
+- Identifying missing calibration values in hardware_state.yaml
+
+### Quick Reference: Jobs to Log Files
+
+| Processing Job                       | Input Log File | Source ID |
+|--------------------------------------|----------------|-----------|
+| `runtime_processing`                 | `1_log.npz`    | 1         |
+| `face_camera_processing`             | `51_log.npz`   | 51        |
+| `body_camera_processing`             | `62_log.npz`   | 62        |
+| `actor_microcontroller_processing`   | `101_log.npz`  | 101       |
+| `sensor_microcontroller_processing`  | `152_log.npz`  | 152       |
+| `encoder_microcontroller_processing` | `203_log.npz`  | 203       |
 
 ---
 
@@ -343,159 +395,32 @@ Lists all `.feather` files in the processed data directory with their sizes.
 
 ### CPU Core Allocation
 
-Each session processing job uses a **maximum of 30 CPU cores** when `workers = -1` is specified. This limit ensures
-efficient resource utilization without overwhelming the system.
+The system automatically calculates optimal resource allocation:
 
-### Checking Available Cores
+- **Workers per session**: `min(cpu_count - 4, 30)` cores
+- **Max parallel sessions**: `floor((cpu_count + 15) / 30)`
 
-Before starting processing, you MUST check the machine's CPU count to determine optimal parallelization:
+### Example Allocations
 
-```bash
-# Check CPU count on Linux/macOS
-nproc  # or: python -c "import os; print(os.cpu_count())"
-```
+| CPU Cores | Max Parallel | Workers/Session | Behavior                               |
+|-----------|--------------|-----------------|----------------------------------------|
+| 16        | 1            | 12              | Sequential processing                  |
+| 32        | 1            | 28              | Sequential, 28 workers per session     |
+| 64        | 2            | 30              | 2 concurrent sessions, 30 workers each |
+| 96        | 3            | 30              | 3 concurrent sessions                  |
+| 128       | 4            | 30              | 4 concurrent sessions                  |
 
-### Calculating Parallel Session Capacity
+### Processing 30 Sessions on 32 Cores
 
-Prefer fully saturating sessions (30 cores each) over running multiple partially-saturated sessions. Use 15 cores
-(half maximum capacity) as the minimum threshold for spawning an additional session:
+With 32 cores:
+- Max parallel: `floor((32 + 15) / 30) = 1`
+- Workers per session: `min(32 - 4, 30) = 28`
 
-```
-max_parallel_sessions = floor((cpu_count + 15) / 30)
-```
-
-| CPU Cores | Max Parallel Sessions | Core Distribution                           |
-|-----------|-----------------------|---------------------------------------------|
-| < 30      | 1                     | Single session, partial core usage          |
-| 30-44     | 1                     | Single session fully saturated              |
-| 45-59     | 2                     | One full (30) + one partial (15-29) session |
-| 60-74     | 2                     | Two fully saturated sessions                |
-| 75-89     | 3                     | Two full + one partial session              |
-| 90-104    | 3                     | Three fully saturated sessions              |
-| 105-119   | 4                     | Three full + one partial session            |
-| 120+      | 4+                    | Continues pattern                           |
-
-### When to Spawn Multiple Sessions
-
-You SHOULD spawn multiple session processing instances when:
-
-1. **Sufficient cores available**: `cpu_count >= 45` allows 2+ parallel sessions
-2. **Multiple sessions to process**: You have a batch of sessions waiting
-3. **No other CPU-intensive tasks**: The machine is not running other heavy workloads
-
-You SHOULD NOT spawn multiple sessions when:
-
-1. **Limited cores**: `cpu_count < 45` means the second session would be severely under-resourced
-2. **Memory constraints**: Each session requires ~4-8 GB RAM for large datasets
-3. **Disk I/O bottleneck**: Slow storage limits parallel processing benefit
-
----
-
-## Parallel Processing
-
-The MCP server supports processing multiple sessions in parallel. Each session runs in its own background thread.
-
-### Starting Multiple Sessions
-
-You can start processing for multiple sessions without waiting for each to complete:
-
-```
-1. start_processing_tool(session_path="/data/session_A") -> "Processing started..."
-2. start_processing_tool(session_path="/data/session_B") -> "Processing started..."
-3. start_processing_tool(session_path="/data/session_C") -> "Processing started..."
-```
-
-### Monitoring Multiple Sessions
-
-Check status for each session independently:
-
-```
-get_processing_status_tool(session_path="/data/session_A") -> "Status: PROCESSING..."
-get_processing_status_tool(session_path="/data/session_B") -> "Status: SUCCEEDED..."
-get_processing_status_tool(session_path="/data/session_C") -> "Status: PROCESSING..."
-```
-
-### Best Practices for Parallel Processing
-
-You MUST follow these practices when processing multiple sessions:
-
-1. Start all sessions before checking any status to maximize parallelism.
-2. Poll status at reasonable intervals (every 30-60 seconds for large sessions).
-3. Continue with other tasks while processing runs in the background.
-4. Verify outputs for all sessions after all processing completes.
-
----
-
-## Background Monitoring with Task Agents
-
-When processing multiple sessions, you SHOULD use a background Task agent to monitor progress and provide formatted
-status updates to the user.
-
-### Spawning a Background Monitor Agent
-
-Use the Task tool with `run_in_background: true` to spawn a monitoring agent:
-
-```
-Tool: Task
-Input:
-  subagent_type: "general-purpose"
-  run_in_background: true
-  prompt: "Monitor behavior processing status for sessions [list paths]. Poll every 30 seconds and format results."
-  description: "Monitor processing status"
-```
-
-### Status Formatting Requirements
-
-The background monitoring agent MUST format status data as a human-readable table before displaying to the user. Raw
-status output is difficult to parse at a glance.
-
-**Required table format:**
-
-```
-+----------------------------------------------------------------------------+
-|                    Behavior Processing Status                              |
-+--------------------------+------------+----------+-------------------------+
-| Session                  | Status     | Progress | Details                 |
-+--------------------------+------------+----------+-------------------------+
-| /data/2024-01-15_mouse1  | PROCESSING | 4/6 jobs | Processing encoder...   |
-| /data/2024-01-15_mouse2  | SUCCEEDED  | 6/6 jobs | Complete                |
-| /data/2024-01-15_mouse3  | FAILED     | 3/6 jobs | Lick processing failed  |
-| /data/2024-01-15_mouse4  | PENDING    | 0/6 jobs | Queued                  |
-+--------------------------+------------+----------+-------------------------+
-Last updated: 2024-01-15 14:32:15
-```
-
-### Formatting Guidelines
-
-1. **Session column**: Show shortened path (last 2-3 components) for readability
-2. **Status column**: Use exact status values (PROCESSING, SUCCEEDED, FAILED, PARTIAL, PENDING, NOT_STARTED)
-3. **Progress column**: Show completed jobs vs total jobs (e.g., "4/6 jobs")
-4. **Details column**: Show current operation for PROCESSING, error summary for FAILED
-5. **Timestamp**: Always include last update time at the bottom
-
-### Example Background Monitor Implementation
-
-The background agent should follow this workflow:
-
-```
-1. Initialize session list and status tracking
-2. Loop until all sessions complete:
-   a. Call get_processing_status_tool for each session
-   b. Parse status responses
-   c. Format as table
-   d. Output formatted table to background preview
-   e. Sleep 30 seconds
-3. Output final summary when all sessions complete
-```
-
-### Reading Background Agent Output
-
-Check the background agent's progress using the Read tool on its output file:
-
-```bash
-# The Task tool returns an output_file path when run_in_background is true
-# Use Read or tail to view the current status
-```
+The 30 sessions will process sequentially:
+1. Session 1 starts immediately with 28 workers
+2. When session 1 completes, session 2 starts automatically
+3. Continues until all 30 complete
+4. No user intervention needed between sessions
 
 ---
 
@@ -503,39 +428,19 @@ Check the background agent's progress using the Read tool on its output file:
 
 ### Common Errors
 
-| Error Message                    | Cause                                  | Resolution                              |
-|----------------------------------|----------------------------------------|-----------------------------------------|
-| "Session path does not exist"    | Invalid or mistyped session path       | Verify the path exists                  |
-| "Processing already in progress" | Session is already being processed     | Wait for current processing to complete |
-| "No output directory found"      | Session has not been processed yet     | Run processing first                    |
-| "No .feather files found"        | Processing failed or has not completed | Check processing status for errors      |
+| Error Message                              | Cause                                  | Resolution                              |
+|--------------------------------------------|----------------------------------------|-----------------------------------------|
+| "At least one session path is required"    | Empty session_paths list               | Provide at least one session path       |
+| "No valid session paths provided"          | All paths invalid or don't exist       | Verify paths exist                      |
+| "Processing already in progress"           | Batch already running                  | Wait for current batch to complete      |
+| "Session path does not exist"              | Invalid path for output check          | Verify the path exists                  |
 
 ### Handling Failures
 
-If processing fails (status = FAILED or PARTIAL):
+If processing fails for some sessions (status shows FAILED or PARTIAL):
 
-1. Check the processing tracker file for detailed error information.
-2. Verify input .npz files are not corrupted.
-3. Ensure sufficient disk space for output files.
-4. Re-run processing for failed jobs only by setting other job flags to `false`.
-
----
-
-## Hardware Configuration Dependencies
-
-Processing depends on hardware calibration values stored in `hardware_state.yaml`:
-
-| Parameter                     | Used By             | Description                              |
-|-------------------------------|---------------------|------------------------------------------|
-| `cm_per_pulse`                | Encoder processing  | Converts encoder pulses to distance (cm) |
-| `lick_threshold`              | Lick processing     | ADC threshold for lick detection         |
-| `torque_per_adc_unit`         | Torque processing   | Converts ADC to torque (N·cm)            |
-| `valve_scale_coefficient`     | Valve processing    | Power law coefficient for water volume   |
-| `valve_nonlinearity_exponent` | Valve processing    | Power law exponent for water volume      |
-| `minimum_brake_strength`      | Brake processing    | Minimum brake torque (N·cm)              |
-| `maximum_brake_strength`      | Brake processing    | Maximum brake torque (N·cm)              |
-| `screens_initially_on`        | Screen processing   | Initial screen state at startup          |
-| `recorded_mesoscope_ttl`      | TTL processing      | Whether mesoscope sync was recorded      |
-| `delivered_gas_puffs`         | Gas puff processing | Whether gas puffs were delivered         |
-
-Missing calibration values cause the corresponding module to be skipped during processing.
+1. Note which sessions failed from the status output
+2. **Read the error messages** in the `errors` field
+3. **Consult LOG_ARCHITECTURE.md** to understand the data structures involved
+4. **Explain the errors** to the user with root cause and resolution
+5. Wait for the current batch to complete before starting any retries
