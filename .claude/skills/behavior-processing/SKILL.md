@@ -87,6 +87,27 @@ The MCP server exposes three tools. You MUST use these tools for all processing 
 
 ---
 
+## Processable Session Types
+
+Only the following session types contain behavior data that can be processed:
+
+| Session Type           | Description                                                               |
+|------------------------|---------------------------------------------------------------------------|
+| `lick training`        | Teaches animals to use the water delivery port while head-fixed           |
+| `run training`         | Teaches animals to run on the treadmill while head-fixed                  |
+| `mesoscope experiment` | Runs VR tasks and collects brain activity data using the 2P-RAM Mesoscope |
+
+**Non-processable session types** (automatically filtered out):
+
+| Session Type         | Description                                                                 |
+|----------------------|-----------------------------------------------------------------------------|
+| `window checking`    | Evaluates cranial window quality; contains no behavior data to process      |
+
+The `discover_sessions_tool` automatically filters out non-processable sessions and lists them in the `skipped` field.
+The `process_session()` function rejects non-processable sessions with an error as a defense-in-depth measure.
+
+---
+
 ## Tool Input/Output Formats
 
 ### `discover_sessions_tool`
@@ -106,12 +127,17 @@ The MCP server exposes three tools. You MUST use these tools for all processing 
         "/path/to/data/animal1/2024-01-16-09-00-00-234567",
         ...
     ],
-    "count": 30
+    "count": 30,
+    "skipped": [  # Optional, only present if sessions were filtered out
+        "/path/to/data/animal1/2024-01-10-10-00-00-111111 (window checking)"
+    ]
 }
 ```
 
 The tool searches for `session_data.yaml` files recursively and returns the resolved session root paths (parent of
-`raw_data`). These paths can be passed directly to `start_processing_tool`.
+`raw_data`). **Only processable session types are returned**: lick training, run training, and mesoscope experiment.
+Non-processable sessions (e.g., window checking) are listed in the `skipped` field. The returned paths can be passed
+directly to `start_processing_tool`.
 
 ### `start_processing_tool`
 

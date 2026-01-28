@@ -6,12 +6,19 @@ Supports both local and remote processing modes.
 from enum import StrEnum
 from pathlib import Path  # noqa: TC003
 
-from sl_shared_assets import SessionData, ProcessingTracker, ProcessingTrackers
+from sl_shared_assets import SessionData, SessionTypes, ProcessingTracker, ProcessingTrackers
 from ataraxis_base_utilities import LogLevel, console
 
 from .camera import CameraLogIds, process_camera_timestamps
 from .runtime import process_runtime_data
 from .microcontrollers import MicrocontrollerLogIds, process_microcontroller_data
+
+# Session types that contain processable behavior data.
+_PROCESSABLE_SESSION_TYPES: frozenset[SessionTypes] = frozenset({
+    SessionTypes.LICK_TRAINING,
+    SessionTypes.RUN_TRAINING,
+    SessionTypes.MESOSCOPE_EXPERIMENT,
+})
 
 
 class BehaviorJobNames(StrEnum):
@@ -220,9 +227,19 @@ def process_session(
         workers: The number of worker processes to use for parallel processing. Setting this to a value less than 1
             uses all available CPU cores. Setting this to 1 conducts processing sequentially.
     """
-    # Loads the session data and initializes the processing tracker.
+    # Loads the session data and validates the session type.
     session = SessionData.load(session_path=session_path)
     session_name = session.session_name
+
+    # Rejects sessions that don't contain processable behavior data.
+    if session.session_type not in _PROCESSABLE_SESSION_TYPES:
+        message = (
+            f"Cannot process session '{session_name}'. Session type '{session.session_type}' is not supported. "
+            f"Only the following session types contain processable behavior data: "
+            f"{', '.join(t.value for t in _PROCESSABLE_SESSION_TYPES)}."
+        )
+        console.error(message=message, error=ValueError)
+
     tracker = ProcessingTracker(
         file_path=session.tracking_data.tracking_data_path.joinpath(ProcessingTrackers.BEHAVIOR)
     )
