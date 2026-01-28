@@ -22,7 +22,7 @@ tools are the only supported interface for agentic behavior data processing.
 
 - You MUST NOT import or call sl-behavior Python functions directly (e.g., `from sl_behavior.pipeline import ...`)
 - You MUST NOT attempt to run processing by executing Python scripts or CLI commands
-- You MUST use the four MCP tools listed in the "Available Tools" section below
+- You MUST use the three MCP tools listed in the "Available Tools" section below
 - You MUST verify the MCP server is connected before attempting any processing operations
 
 ### Why MCP Tools Are Required
@@ -161,6 +161,9 @@ The tool searches for `session_data.yaml` files recursively and returns the reso
                 ("body_camera_processing", "running"),
                 ("actor_microcontroller_processing", "pending"),
                 ...
+            ],
+            "errors": [              # Only present if status is FAILED or PARTIAL
+                "actor_microcontroller_processing: KeyError: 'cm_per_pulse' (pipeline.py:234)"
             ]
         },
         ...
@@ -179,8 +182,8 @@ The tool searches for `session_data.yaml` files recursively and returns the reso
 
 ## Formatting Status as a Table
 
-When presenting status to the user, you MUST format the data as a clear table after each 5-minute status check. The
-table MUST include these three columns for each session:
+When presenting status to the user, you MUST format the data as a clear table. The table MUST include these three
+columns for each session:
 
 1. **Full Session Name** - The complete session identifier (e.g., `2024-01-15-10-30-00-123456`)
 2. **Job Completion State** - Progress as `completed/total` jobs (e.g., `3/6`)
@@ -213,21 +216,23 @@ Summary: 5/30 succeeded | 1 processing | 24 queued | 0 failed
 ```
 
 **Important:** Always use the FULL session name from the session path, not a truncated version. The session name is
-typically found in the path (e.g., `/home/data/test_run/2024-01-15-10-30-00-123456/raw_data` → session name is
+typically found in the path (e.g., `/home/data/test_run/2024-01-15-10-30-00-123456/raw_data` -> session name is
 `2024-01-15-10-30-00-123456`).
 
 ---
 
 ## Processing Workflow
 
-The workflow is simple: start processing, then automatically check status every 5 minutes until completion.
+The workflow starts processing in the background and allows the user to check status on demand.
 
 ### Workflow Overview
 
 1. **Discover sessions** → Find all session paths to process
-2. **Start processing** → Call `start_processing_tool` with all session paths
-3. **Inform user** → Report how many started immediately vs queued
-4. **Monitor every 5 minutes** → Check status and display table until all sessions complete
+2. **Ask about CPU allocation** → Explain resource model and ask how many cores to use
+3. **Start processing** → Call `start_processing_tool` with session paths and worker count
+4. **Inform user** → Report batch status and explain how to check progress
+5. **Check status on request** → When the user asks, display status table
+6. **Explain any errors** → When processing completes with failures, analyze and explain errors
 
 ### Step 1: Discover Sessions
 
@@ -240,49 +245,136 @@ Input: root_directory = "/path/to/data"
 
 The tool searches for `session_data.yaml` files and returns the resolved session root paths.
 
-### Step 2: Start Processing
+### Step 2: Ask About CPU Allocation
 
-Call `start_processing_tool` with ALL session paths at once:
+Before starting processing, you MUST ask the user how many CPU cores to dedicate. Explain the resource allocation
+model so they can make an informed decision:
+
+> "Found [N] sessions to process. Before starting, how many CPU cores should I dedicate to processing?
+>
+> **Resource allocation model:**
+> - Each session saturates at **30 cores** (using more provides no benefit)
+> - To process **2+ sessions in parallel**, you need at least **45 cores** (30 for the first + 15 minimum for each
+>   additional session)
+> - The system reserves 4 cores for overhead, so available workers = total cores - 4
+>
+> Your system has [X] cores. With all cores dedicated, [Y] session(s) can process in parallel.
+> You can specify fewer cores if you want to leave resources for other work.
+>
+> How many cores would you like to use? (Enter a number, or 'all' for automatic allocation)"
+
+**After the user responds:**
+- If they say "all" or want automatic allocation, use `workers: -1`
+- If they specify a number, use that as the `workers` parameter
+- If they specify fewer than 12 cores, warn that processing will be slow but proceed if they confirm
+
+### Step 3: Start Processing
+
+Call `start_processing_tool` with ALL session paths and the worker count:
 
 ```
 Tool: start_processing_tool
 Input: session_paths = ["/path/session1", "/path/session2", ..., "/path/session30"]
+       workers = -1  # or the user-specified number
 ```
 
 The tool will:
-- Calculate max parallel sessions based on CPU cores
+- Calculate max parallel sessions based on allocated cores
 - Start up to max_parallel sessions immediately
 - Queue the rest for automatic processing
 - Return immediately with confirmation
 
-### Step 3: Inform User
+### Step 4: Inform User
 
-After starting, report the batch status:
+After starting, report the batch status and explain that processing runs in the background:
 
-> "Started processing 30 sessions. With 32 CPU cores, 1 session runs at a time (28 workers).
-> 1 session started immediately, 29 queued. Sessions will process automatically.
-> I will check status every 5 minutes and display an updated table."
+> "Started processing [N] sessions with [X] workers per session. [Y] session(s) processing in parallel,
+> [Z] queued.
+>
+> Processing runs in the background. You can ask me to check status at any time, or request periodic updates
+> (e.g., 'check every 5 minutes'). I'll display a progress table whenever you ask."
 
-### Step 4: Monitor Status Every 5 Minutes
+### Step 5: Check Status on Request
 
-You MUST check processing status every 5 minutes until all sessions complete. Do NOT wait for the user to request
-status updates.
-
-**Monitoring workflow:**
-
-1. Call `get_processing_status_tool` (no parameters needed)
-2. Format and display the status table (see "Formatting Status as a Table" above)
-3. If any sessions are still PROCESSING or QUEUED, wait 5 minutes and repeat
-4. Stop monitoring only when all sessions show SUCCEEDED or FAILED
+When the user requests a status update, call `get_processing_status_tool` and display the formatted table:
 
 ```
 Tool: get_processing_status_tool
 Input: (none)
 ```
 
-**Important:** When the status summary shows `processing: 0` and `queued: 0`, all sessions have completed. Report the
-final status table and stop monitoring. Do NOT perform any additional verification steps - if processing reports
-completion, the outputs are ready.
+**If the user requests periodic updates** (e.g., "check every 10 minutes"), honor that request and check at the
+specified interval until processing completes.
+
+**When processing completes** (`processing: 0` and `queued: 0`), proceed to Step 6 for error analysis.
+
+### Step 6: Explain Any Errors
+
+**You MUST analyze and explain any errors when processing completes.** This is a mandatory step, not optional.
+
+When the status check shows sessions with FAILED or PARTIAL status:
+
+1. **Read the LOG_ARCHITECTURE.md reference** to understand log file structures and common error patterns
+2. **Extract error messages** from the status output's `errors` field for each failed session
+3. **Identify the root cause** by mapping the error to the appropriate section in LOG_ARCHITECTURE.md
+4. **Explain to the user** in plain language what went wrong and how to fix it
+
+**Error explanation format:**
+
+```
+**Processing Complete**
+
+Summary: 28/30 succeeded | 0 processing | 0 queued | 2 failed
+
+**Failed Sessions:**
+
+1. **2024-01-15-10-30-00-123456** - FAILED
+   - Error: `actor_microcontroller_processing: KeyError: 'minimum_brake_strength' (pipeline.py:234)`
+   - Cause: The `hardware_state.yaml` file is missing the brake calibration value required to process
+     brake engagement data from the Actor microcontroller (101_log.npz).
+   - Fix: Add `minimum_brake_strength` and `maximum_brake_strength` to the session's `hardware_state.yaml`.
+
+2. **2024-01-16-09-00-00-234567** - PARTIAL
+   - Error: `encoder_microcontroller_processing: FileNotFoundError: 203_log.npz`
+   - Cause: The encoder log file is missing. This can occur if the encoder microcontroller was not
+     enabled during the session or if the log file was not transferred correctly.
+   - Fix: Verify the encoder was enabled in the experiment configuration. If it was, check if
+     `203_log.npz` exists in the session's `raw_data/` directory.
+```
+
+**If all sessions succeed**, simply report completion:
+
+```
+**Processing Complete**
+
+Summary: 30/30 succeeded | 0 processing | 0 queued | 0 failed
+
+All sessions processed successfully. Output files are ready in each session's `behavior_data/` directory.
+```
+
+---
+
+## Log File Reference
+
+For detailed information about log file formats, message structures, and hardware module data, refer to
+[LOG_ARCHITECTURE.md](LOG_ARCHITECTURE.md).
+
+Use this reference when:
+- Answering user questions about log composition or data structures
+- Debugging processing errors
+- Understanding which log files map to which processing jobs
+- Identifying missing calibration values in hardware_state.yaml
+
+### Quick Reference: Jobs to Log Files
+
+| Processing Job                       | Input Log File | Source ID |
+|--------------------------------------|----------------|-----------|
+| `runtime_processing`                 | `1_log.npz`    | 1         |
+| `face_camera_processing`             | `51_log.npz`   | 51        |
+| `body_camera_processing`             | `62_log.npz`   | 62        |
+| `actor_microcontroller_processing`   | `101_log.npz`  | 101       |
+| `sensor_microcontroller_processing`  | `152_log.npz`  | 152       |
+| `encoder_microcontroller_processing` | `203_log.npz`  | 203       |
 
 ---
 
@@ -319,193 +411,6 @@ The 30 sessions will process sequentially:
 
 ---
 
-## Log File Architecture
-
-This library processes `.npz` log archives generated during Sun Lab VR data acquisition sessions. Each log file has a
-unique numeric source ID that identifies its origin.
-
-### Source ID Assignments
-
-| Source ID | Log File       | Generator Library                   | Content                              |
-|-----------|----------------|-------------------------------------|--------------------------------------|
-| 1         | `1_log.npz`    | sl-experiment (Mesoscope-VR)        | VR system state, runtime, trials     |
-| 51        | `51_log.npz`   | ataraxis-video-system               | Face camera frame timestamps         |
-| 62        | `62_log.npz`   | ataraxis-video-system               | Body camera frame timestamps         |
-| 101       | `101_log.npz`  | ataraxis-communication-interface    | Actor microcontroller modules        |
-| 152       | `152_log.npz`  | ataraxis-communication-interface    | Sensor microcontroller modules       |
-| 203       | `203_log.npz`  | ataraxis-communication-interface    | Encoder microcontroller modules      |
-
-### Common Message Structure
-
-All log files share a common message envelope format:
-
-```
-Byte 0:      source_id (uint8)     - Identifies the logging component
-Bytes 1-8:   timestamp (uint64)    - Microseconds elapsed since onset (or 0 for onset message)
-Bytes 9+:    payload               - Source-specific data
-```
-
-### Onset Timestamp Handling
-
-Each log file contains a special onset message where `timestamp = 0`. The payload of this message contains the absolute
-UTC timestamp in microseconds since Unix epoch. All other timestamps are relative to this onset, enabling reconstruction
-of absolute timestamps via `absolute_time = onset_us + elapsed_us`.
-
----
-
-## Runtime Data Log (1_log.npz)
-
-The runtime log captures VR system state, session runtime state, trial guidance, and cue sequences. Generated by the
-`_MesoscopeVRSystem` class in sl-experiment.
-
-### Message Codes
-
-| Code | Name                      | Payload Size | Description                                    |
-|------|---------------------------|--------------|------------------------------------------------|
-| 1    | SYSTEM_STATE              | 2 bytes      | VR system configuration state change           |
-| 2    | RUNTIME_STATE             | 2 bytes      | Session runtime stage change                   |
-| 3    | REINFORCING_GUIDANCE      | 2 bytes      | Water reward trial guidance mode change        |
-| 4    | AVERSIVE_GUIDANCE         | 2 bytes      | Gas puff trial guidance mode change            |
-| 5    | DISTANCE_SNAPSHOT         | 9 bytes      | Cumulative distance at cue sequence change     |
-| >500 | CUE_SEQUENCE              | Variable     | VR wall cue sequence (uint8 array)             |
-
-### VR System States
-
-| Code | State         | Description                                                |
-|------|---------------|------------------------------------------------------------|
-| 0    | IDLE          | System paused or not conducting acquisition                |
-| 1    | REST          | Rest period: brake engaged, screens off, torque enabled    |
-| 2    | RUN           | Run period: brake disengaged, encoder enabled              |
-| 3    | LICK_TRAINING | Lick training: wheel locked, animal trains to lick         |
-| 4    | RUN_TRAINING  | Run training: wheel unlocked, animal trains to run         |
-
-### Trial Decomposition
-
-Cue sequences are decomposed into individual trials using a greedy longest-match algorithm. Each trial type has a unique
-wall cue motif (byte sequence) defined in the experiment configuration. The algorithm:
-
-1. Iterates through the cue sequence from the start
-2. Matches the longest possible trial motif at each position
-3. Records the trial type index and cumulative distance threshold
-4. Continues until the entire sequence is decomposed
-
-### Output Files
-
-| Output File                               | Columns                                        |
-|-------------------------------------------|------------------------------------------------|
-| `system_state_data.feather`               | `time_us`, `system_state`                      |
-| `runtime_state_data.feather`              | `time_us`, `runtime_state`                     |
-| `reinforcing_guidance_state_data.feather` | `time_us`, `reinforcing_guidance_state`        |
-| `aversive_guidance_state_data.feather`    | `time_us`, `aversive_guidance_state`           |
-| `vr_cue_data.feather`                     | `vr_cue`, `traveled_distance_cm`               |
-| `vr_trigger_zone_data.feather`            | `trigger_zone_start_cm`, `trigger_zone_end_cm` |
-| `trial_data.feather`                      | `trial_type_index`, `traveled_distance_cm`     |
-
----
-
-## Camera Data Logs (51_log.npz, 62_log.npz)
-
-Camera logs contain frame acquisition timestamps generated by ataraxis-video-system's `VideoSystem` class.
-
-### Message Format
-
-**Regular Frame Message (9 bytes total):**
-
-| Offset  | Size    | Type   | Description                           |
-|---------|---------|--------|---------------------------------------|
-| 0       | 1 byte  | uint8  | Source ID (51 or 62)                  |
-| 1-8     | 8 bytes | uint64 | Microseconds elapsed since onset      |
-
-**Onset Message (17 bytes total):**
-
-| Offset  | Size    | Type   | Description                           |
-|---------|---------|--------|---------------------------------------|
-| 0       | 1 byte  | uint8  | Source ID                             |
-| 1-8     | 8 bytes | uint64 | Zero (indicates onset message)        |
-| 9-16    | 8 bytes | int64  | Absolute UTC timestamp (microseconds) |
-
-### Output Files
-
-| Input Log      | Output File                         | Columns         |
-|----------------|-------------------------------------|-----------------|
-| `51_log.npz`   | `face_camera_timestamps.feather`    | `frame_time_us` |
-| `62_log.npz`   | `body_camera_timestamps.feather`    | `frame_time_us` |
-
----
-
-## Microcontroller Data Logs
-
-Microcontroller logs contain hardware module event data generated by ataraxis-communication-interface. Each
-microcontroller manages multiple hardware modules identified by (module_type, module_id) pairs.
-
-### Message Format
-
-| Offset  | Size     | Type   | Description                                    |
-|---------|----------|--------|------------------------------------------------|
-| 0       | 1 byte   | uint8  | Source ID (101, 152, or 203)                   |
-| 1-8     | 8 bytes  | uint64 | Microseconds elapsed since onset               |
-| 9       | 1 byte   | uint8  | Protocol code (6=MODULE_DATA, 8=MODULE_STATE)  |
-| 10      | 1 byte   | uint8  | Module type                                    |
-| 11      | 1 byte   | uint8  | Module instance ID                             |
-| 12      | 1 byte   | uint8  | Command code                                   |
-| 13      | 1 byte   | uint8  | Event code (51+ for custom data)               |
-| 14      | 1 byte   | uint8  | Prototype code (data type, MODULE_DATA only)   |
-| 15+     | Variable | varies | Data payload (MODULE_DATA only)                |
-
-### Actor Microcontroller (101_log.npz)
-
-Manages actuator hardware modules that control physical outputs.
-
-| Module Type | Instance | Module Name  | Event Codes                                           |
-|-------------|----------|--------------|-------------------------------------------------------|
-| 3           | 1        | BrakeModule  | 51 (kEngaged), 52 (kDisengaged)                       |
-| 5           | 1        | ValveModule  | 51 (kOpen), 52 (kClosed), 54 (kToneOn), 55 (kToneOff) |
-| 5           | 2        | GasPuffValve | 51 (kOpen), 52 (kClosed)                              |
-| 7           | 1        | ScreenModule | 51 (kOn), 52 (kOff)                                   |
-
-**Output Files:**
-
-| Output File              | Columns                                              | Description                        |
-|--------------------------|------------------------------------------------------|------------------------------------|
-| `brake_data.feather`     | `time_us`, `brake_torque_N_cm`                       | Brake engagement torque            |
-| `valve_data.feather`     | `time_us`, `dispensed_water_volume_uL`, `tone_state` | Water rewards and tone cues        |
-| `gas_puff_data.feather`  | `time_us`, `puff_state`, `cumulative_puff_count`     | Gas puff delivery events           |
-| `screen_data.feather`    | `time_us`, `screen_state`                            | VR screen on/off state             |
-
-### Sensor Microcontroller (152_log.npz)
-
-Manages sensor hardware modules that capture animal behavior.
-
-| Module Type | Instance | Module Name   | Event Codes                                      |
-|-------------|----------|---------------|--------------------------------------------------|
-| 4           | 1        | LickModule    | 51 (kChanged) with 12-bit ADC voltage            |
-| 6           | 1        | TorqueModule  | 51 (kCCWTorque), 52 (kCWTorque)                  |
-| 1           | 1        | TTLModule     | 51 (kInputOn), 52 (kInputOff) for mesoscope sync |
-
-**Output Files:**
-
-| Output File                    | Columns                                       | Description                 |
-|--------------------------------|-----------------------------------------------|-----------------------------|
-| `lick_data.feather`            | `time_us`, `voltage_12_bit_adc`, `lick_state` | Lick sensor readings        |
-| `torque_data.feather`          | `time_us`, `torque_N_cm`                      | Wheel torque measurements   |
-| `mesoscope_frame_data.feather` | `time_us`, `ttl_state`                        | Mesoscope frame sync pulses |
-
-### Encoder Microcontroller (203_log.npz)
-
-Manages the rotary encoder for tracking animal locomotion.
-
-| Module Type | Instance | Module Name    | Event Codes                                     |
-|-------------|----------|----------------|-------------------------------------------------|
-| 2           | 1        | EncoderModule  | 51 (kRotatedCCW), 52 (kRotatedCW) with float64  |
-
-**Output Files:**
-
-| Output File            | Columns                           | Description                  |
-|------------------------|-----------------------------------|------------------------------|
-| `encoder_data.feather` | `time_us`, `traveled_distance_cm` | Cumulative distance traveled |
-
----
-
 ## Error Handling
 
 ### Common Errors
@@ -519,30 +424,10 @@ Manages the rotary encoder for tracking animal locomotion.
 
 ### Handling Failures
 
-If processing fails for some sessions (check status shows FAILED or PARTIAL):
+If processing fails for some sessions (status shows FAILED or PARTIAL):
 
 1. Note which sessions failed from the status output
-2. Wait for the current batch to complete
-3. Start a new batch with only the failed sessions
-4. Check the processing tracker YAML files for detailed error information
-
----
-
-## Hardware Configuration Dependencies
-
-Processing depends on hardware calibration values stored in `hardware_state.yaml`:
-
-| Parameter                     | Used By             | Description                              |
-|-------------------------------|---------------------|------------------------------------------|
-| `cm_per_pulse`                | Encoder processing  | Converts encoder pulses to distance (cm) |
-| `lick_threshold`              | Lick processing     | ADC threshold for lick detection         |
-| `torque_per_adc_unit`         | Torque processing   | Converts ADC to torque (N·cm)            |
-| `valve_scale_coefficient`     | Valve processing    | Power law coefficient for water volume   |
-| `valve_nonlinearity_exponent` | Valve processing    | Power law exponent for water volume      |
-| `minimum_brake_strength`      | Brake processing    | Minimum brake torque (N·cm)              |
-| `maximum_brake_strength`      | Brake processing    | Maximum brake torque (N·cm)              |
-| `screens_initially_on`        | Screen processing   | Initial screen state at startup          |
-| `recorded_mesoscope_ttl`      | TTL processing      | Whether mesoscope sync was recorded      |
-| `delivered_gas_puffs`         | Gas puff processing | Whether gas puffs were delivered         |
-
-Missing calibration values cause the corresponding module to be skipped during processing.
+2. **Read the error messages** in the `errors` field
+3. **Consult LOG_ARCHITECTURE.md** to understand the data structures involved
+4. **Explain the errors** to the user with root cause and resolution
+5. Wait for the current batch to complete before starting any retries
